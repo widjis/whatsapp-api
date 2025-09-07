@@ -1,10 +1,10 @@
 {
   "metadata": {
-    "lastUpdated": "2025-09-07T05:34:50.078Z",
-    "totalContacts": 111,
-    "mappedLids": 98,
+    "lastUpdated": "2025-09-07T07:07:26.857Z",
+    "totalContacts": 245,
+    "mappedLids": 207,
     "scannedChats": 1,
-    "lastScanTime": "2025-09-07T05:33:48.285Z"
+    "lastScanTime": "2025-09-07T07:06:08.602Z"
   },
   "contacts": [
     {
@@ -13,7 +13,7 @@
       "lid": "80444922015783",
       "pushName": "Widji",
       "source": "contact_event",
-      "lastSeen": "2025-09-07T05:34:50.075Z"
+      "lastSeen": "2025-09-07T07:07:26.855Z"
     },
     {
       "id": "6281145401505:66@s.whatsapp.net",
@@ -21,7 +21,7 @@
       "lid": "6281145401505:66",
       "pushName": "WhatsApp AI Assistant",
       "source": "self",
-      "lastSeen": "2025-09-07T05:33:43.277Z"
+      "lastSeen": "2025-09-07T07:06:03.592Z"
     },
     {
       "id": "6285712612218@s.whatsapp.net",
@@ -31,18 +31,18 @@
       "source": "message",
       "chatId": "6285712612218@s.whatsapp.net",
       "messageTimestamp": {
-        "low": 1757223223,
+        "low": 1757228763,
         "high": 0,
         "unsigned": true
       },
-      "lastSeen": "2025-09-07T05:33:44.553Z"
+      "lastSeen": "2025-09-07T07:06:04.657Z"
     },
     {
       "id": "6281145401505@s.whatsapp.net",
       "phoneNumber": "6281145401505",
       "lid": null,
       "source": "contact_event",
-      "lastSeen": "2025-09-07T05:33:58.572Z"
+      "lastSeen": "2025-09-07T06:32:27.462Z"
     },
     {
       "id": "120363215673098371@g.us",
@@ -52,11 +52,11 @@
       "source": "message",
       "chatId": "120363215673098371@g.us",
       "messageTimestamp": {
-        "low": 1757222760,
+        "low": 1757228799,
         "high": 0,
         "unsigned": true
       },
-      "lastSeen": "2025-09-07T05:26:02.348Z"
+      "lastSeen": "2025-09-07T07:06:40.914Z"
     },
     {
       "id": "6281280578366@s.whatsapp.net",
@@ -72,6 +72,20 @@
       "pushName": "Sasa",
       "source": "contact_event",
       "lastSeen": "2025-09-07T05:15:45.237Z"
+    },
+    {
+      "id": "6282293670285@s.whatsapp.net",
+      "phoneNumber": "6282293670285",
+      "lid": null,
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T06:10:08.460Z"
+    },
+    {
+      "id": "6281342707428@s.whatsapp.net",
+      "phoneNumber": "6281342707428",
+      "lid": null,
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T07:02:00.042Z"
     }
   ],
   "lidMappings": {

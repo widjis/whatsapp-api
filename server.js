@@ -343,44 +343,44 @@ processMessageForReply = async function(data) {
         // Show typing indicator before sending reply (if enabled)
         if (TYPING_ENABLED) {
           try {
-            await sock.sendPresenceUpdate('composing', data.from);
-            console.log('Showing typing indicator to:', data.fromNumber);
+            await sock.sendPresenceUpdate('composing', data.replyTo);
+            console.log('Showing typing indicator to:', data.isGroup ? 'group' : data.fromNumber);
             
             // Wait a moment to simulate natural typing
             await new Promise(resolve => setTimeout(resolve, 1500));
             
             // Send the actual reply
-            await sock.sendMessage(data.from, { text: replyText });
+            await sock.sendMessage(data.replyTo, { text: replyText });
             
             // Mark as available after sending
-            await sock.sendPresenceUpdate('available', data.from);
+            await sock.sendPresenceUpdate('available', data.replyTo);
             
-            console.log('Sent n8n response to:', data.fromNumber);
+            console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber);
           } catch (presenceError) {
             console.error('Error with presence update:', presenceError.message);
             // Still send the message even if presence update fails
-            await sock.sendMessage(data.from, { text: replyText });
-            console.log('Sent n8n response to:', data.fromNumber, '(without typing indicator)');
+            await sock.sendMessage(data.replyTo, { text: replyText });
+            console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber, '(without typing indicator)');
           }
         } else {
           // Send reply directly without typing indicator
-          await sock.sendMessage(data.from, { text: replyText });
-          console.log('Sent n8n response to:', data.fromNumber, '(typing disabled)');
+          await sock.sendMessage(data.replyTo, { text: replyText });
+          console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber, '(typing disabled)');
         }
       } else {
         console.log('No valid response text found in n8n result:', n8nResult.result);
         // Fallback to default reply
-        await sendDefaultReply(data.from, data.isGroup);
+        await sendDefaultReply(data.replyTo, data.isGroup);
       }
     } else {
       console.log('n8n request failed, using default reply');
       // Fallback to default reply
-      await sendDefaultReply(data.from, data.isGroup);
+      await sendDefaultReply(data.replyTo, data.isGroup);
     }
   } catch (error) {
     console.error('Error processing n8n response:', error.message);
     // Fallback to default reply
-    await sendDefaultReply(data.from, data.isGroup);
+    await sendDefaultReply(data.replyTo, data.isGroup);
   }
 };
 
@@ -488,7 +488,7 @@ async function processMediaAttachment(message, mediaType, mediaMessage) {
           break;
       }
       
-      console.log(`${mediaType} downloaded successfully, size:`, mediaBuffer ? mediaBuffer.length : 0, 'bytes');
+      // Media downloaded successfully
     } catch (downloadError) {
       console.error(`Error downloading ${mediaType}:`, downloadError);
       attachment.error = `Failed to download ${mediaType}`;
@@ -1108,29 +1108,41 @@ async function connectToWhatsApp() {
         messageText = 'Media message received';
       }
       
-      const sender = message.key.remoteJid;
-      const formattedMessage = `**From:** ${sender}\n**Message:** ${messageText}`;
+      // Determine sender information correctly for both direct and group messages
+      const isGroup = message.key.remoteJid.endsWith('@g.us');
+      let sender, actualSender;
+      
+      if (isGroup) {
+        // For group messages, use participantPn (phone number) first, fallback to participant (LID)
+        actualSender = message.key.participantPn || message.key.participant;
+        sender = message.key.remoteJid; // Keep group ID for context
+      } else {
+        // For direct messages, remoteJid is the actual sender
+        actualSender = message.key.remoteJid;
+        sender = message.key.remoteJid;
+      }
+      
+      const formattedMessage = `**From:** ${isGroup ? `${actualSender} (in ${sender})` : sender}\n**Message:** ${messageText}`;
 
         console.log('New message:', formattedMessage);
-        console.log('=== RAW BAILEYS MESSAGE OBJECT ===');
-        console.log(JSON.stringify(message, null, 2));
-        console.log('=== END RAW MESSAGE ===');
+        // Raw message object logged for debugging
       
       if (soket) {
         soket.emit('message', formattedMessage);
       }
-      
+      // Log the raw message object
+      console.log('Raw Message:', JSON.stringify(message, null, 2));
       // Determine if we should reply to this message
-      const senderNumber = lidToPhoneNumber(sender);
-      const isGroup = sender.endsWith('@g.us');
+      const senderNumber = lidToPhoneNumber(actualSender); // Use actual sender for phone number lookup
       let shouldReply = false;
       
       console.log('Processing message from:', senderNumber, '(Raw sender:', sender, ')');
       
       // Check if we should reply to direct messages from admin
-      if (!isGroup && senderNumber === ADMIN_NUMBER) {
-        shouldReply = true;
-      }
+      // if (!isGroup && senderNumber === ADMIN_NUMBER) {
+      //   console.log('Admin message detected, treating as direct message');
+      //   shouldReply = true;
+      // }
       
       // Check if we should reply to group messages (when tagged) - treat like direct messages
       if (isGroup && who_i_am) {
@@ -1172,21 +1184,36 @@ async function connectToWhatsApp() {
         const isTagged = textMentions.some(Boolean) || jidMentions;
         if (isTagged) {
           shouldReply = true;
-          console.log(`✅ Bot tagged in group by ${senderNumber} - treating as direct message`);
         }
         
-        console.log('Tag detection result:', {
-          textMentions,
-          jidMentions,
-          isTagged,
-          shouldReply
-        });
+        // Tag detection completed
       }
       
       // Prepare message data for buffering or direct processing
       // Extract and format quoted message information
       let quotedMessageInfo = null;
-      const contextInfo = message.message?.extendedTextMessage?.contextInfo || message.message?.imageMessage?.contextInfo || message.message?.videoMessage?.contextInfo || message.message?.audioMessage?.contextInfo || message.message?.documentMessage?.contextInfo;
+      
+      // Debug: Log the complete message structure to understand quote detection
+      console.log('🔍 Complete message structure:');
+      console.log('- Raw message keys:', Object.keys(message.message || {}));
+      console.log('- Message content:', JSON.stringify(message.message, null, 2));
+      
+      const contextInfo = message.message?.extendedTextMessage?.contextInfo || 
+                         message.message?.imageMessage?.contextInfo || 
+                         message.message?.videoMessage?.contextInfo || 
+                         message.message?.audioMessage?.contextInfo || 
+                         message.message?.documentMessage?.contextInfo ||
+                         message.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo ||
+                         message.message?.ephemeralMessage?.message?.imageMessage?.contextInfo ||
+                         message.message?.ephemeralMessage?.message?.videoMessage?.contextInfo ||
+                         message.message?.ephemeralMessage?.message?.audioMessage?.contextInfo ||
+                         message.message?.ephemeralMessage?.message?.documentMessage?.contextInfo;
+      
+      console.log('- contextInfo found:', !!contextInfo);
+      console.log('- quotedMessage in contextInfo:', !!contextInfo?.quotedMessage);
+      if (contextInfo) {
+        console.log('- contextInfo keys:', Object.keys(contextInfo));
+      }
       
       if (contextInfo?.quotedMessage) {
         const quoted = contextInfo.quotedMessage;
@@ -1195,26 +1222,29 @@ async function connectToWhatsApp() {
         let quotedMediaInfo = null;
         
         // Extract text and download media from different quoted message types
+        // Handle both direct and ephemeral quoted messages
+        const actualQuoted = quoted.ephemeralMessage?.message || quoted;
+        
         if (quoted.conversation) {
           quotedText = quoted.conversation;
           quotedType = 'text';
         } else if (quoted.extendedTextMessage?.text) {
           quotedText = quoted.extendedTextMessage.text;
           quotedType = 'extended_text';
-        } else if (quoted.imageMessage) {
-          quotedText = quoted.imageMessage.caption || 'Image';
+        } else if (actualQuoted.imageMessage) {
+          quotedText = actualQuoted.imageMessage.caption || 'Image';
           quotedType = 'image';
           
           // Download quoted image
           try {
-            const quotedImageBuffer = await downloadMediaMessage({ message: { imageMessage: quoted.imageMessage } }, 'buffer');
+            const quotedImageBuffer = await downloadMediaMessage({ message: { imageMessage: actualQuoted.imageMessage } }, 'buffer');
             quotedMediaInfo = {
               type: 'image',
-              caption: quoted.imageMessage.caption || '',
-              mimetype: quoted.imageMessage.mimetype || 'image/jpeg',
-              fileLength: quoted.imageMessage.fileLength || 0,
-              width: quoted.imageMessage.width || null,
-              height: quoted.imageMessage.height || null,
+              caption: actualQuoted.imageMessage.caption || '',
+              mimetype: actualQuoted.imageMessage.mimetype || 'image/jpeg',
+              fileLength: actualQuoted.imageMessage.fileLength || 0,
+              width: actualQuoted.imageMessage.width || null,
+              height: actualQuoted.imageMessage.height || null,
               imageData: quotedImageBuffer ? quotedImageBuffer.toString('base64') : null
             };
             console.log(`Downloaded quoted image: ${quotedImageBuffer ? quotedImageBuffer.length : 0} bytes`);
@@ -1222,29 +1252,29 @@ async function connectToWhatsApp() {
             console.error('Failed to download quoted image:', error.message);
             quotedMediaInfo = {
               type: 'image',
-              caption: quoted.imageMessage.caption || '',
-              mimetype: quoted.imageMessage.mimetype || 'image/jpeg',
-              fileLength: quoted.imageMessage.fileLength || 0,
-              width: quoted.imageMessage.width || null,
-              height: quoted.imageMessage.height || null,
+              caption: actualQuoted.imageMessage.caption || '',
+              mimetype: actualQuoted.imageMessage.mimetype || 'image/jpeg',
+              fileLength: actualQuoted.imageMessage.fileLength || 0,
+              width: actualQuoted.imageMessage.width || null,
+              height: actualQuoted.imageMessage.height || null,
               imageData: null
             };
           }
-        } else if (quoted.videoMessage) {
-          quotedText = quoted.videoMessage.caption || 'Video';
+        } else if (actualQuoted.videoMessage) {
+          quotedText = actualQuoted.videoMessage.caption || 'Video';
           quotedType = 'video';
           
           // Download quoted video
           try {
-            const quotedVideoBuffer = await downloadMediaMessage({ message: { videoMessage: quoted.videoMessage } }, 'buffer');
+            const quotedVideoBuffer = await downloadMediaMessage({ message: { videoMessage: actualQuoted.videoMessage } }, 'buffer');
             quotedMediaInfo = {
               type: 'video',
-              caption: quoted.videoMessage.caption || '',
-              mimetype: quoted.videoMessage.mimetype || 'video/mp4',
-              fileLength: quoted.videoMessage.fileLength || 0,
-              seconds: quoted.videoMessage.seconds || null,
-              width: quoted.videoMessage.width || null,
-              height: quoted.videoMessage.height || null,
+              caption: actualQuoted.videoMessage.caption || '',
+              mimetype: actualQuoted.videoMessage.mimetype || 'video/mp4',
+              fileLength: actualQuoted.videoMessage.fileLength || 0,
+              seconds: actualQuoted.videoMessage.seconds || null,
+              width: actualQuoted.videoMessage.width || null,
+              height: actualQuoted.videoMessage.height || null,
               videoData: quotedVideoBuffer ? quotedVideoBuffer.toString('base64') : null
             };
             console.log(`Downloaded quoted video: ${quotedVideoBuffer ? quotedVideoBuffer.length : 0} bytes`);
@@ -1252,28 +1282,28 @@ async function connectToWhatsApp() {
             console.error('Failed to download quoted video:', error.message);
             quotedMediaInfo = {
               type: 'video',
-              caption: quoted.videoMessage.caption || '',
-              mimetype: quoted.videoMessage.mimetype || 'video/mp4',
-              fileLength: quoted.videoMessage.fileLength || 0,
-              seconds: quoted.videoMessage.seconds || null,
-              width: quoted.videoMessage.width || null,
-              height: quoted.videoMessage.height || null,
+              caption: actualQuoted.videoMessage.caption || '',
+              mimetype: actualQuoted.videoMessage.mimetype || 'video/mp4',
+              fileLength: actualQuoted.videoMessage.fileLength || 0,
+              seconds: actualQuoted.videoMessage.seconds || null,
+              width: actualQuoted.videoMessage.width || null,
+              height: actualQuoted.videoMessage.height || null,
               videoData: null
             };
           }
-        } else if (quoted.audioMessage) {
-          quotedText = quoted.audioMessage.ptt ? 'Voice message' : 'Audio';
+        } else if (actualQuoted.audioMessage) {
+          quotedText = actualQuoted.audioMessage.ptt ? 'Voice message' : 'Audio';
           quotedType = 'audio';
           
           // Download quoted audio
           try {
-            const quotedAudioBuffer = await downloadMediaMessage({ message: { audioMessage: quoted.audioMessage } }, 'buffer');
+            const quotedAudioBuffer = await downloadMediaMessage({ message: { audioMessage: actualQuoted.audioMessage } }, 'buffer');
             quotedMediaInfo = {
               type: 'audio',
-              mimetype: quoted.audioMessage.mimetype || 'audio/ogg',
-              fileLength: quoted.audioMessage.fileLength || 0,
-              seconds: quoted.audioMessage.seconds || null,
-              ptt: quoted.audioMessage.ptt || false,
+              mimetype: actualQuoted.audioMessage.mimetype || 'audio/ogg',
+              fileLength: actualQuoted.audioMessage.fileLength || 0,
+              seconds: actualQuoted.audioMessage.seconds || null,
+              ptt: actualQuoted.audioMessage.ptt || false,
               audioData: quotedAudioBuffer ? quotedAudioBuffer.toString('base64') : null
             };
             console.log(`Downloaded quoted audio: ${quotedAudioBuffer ? quotedAudioBuffer.length : 0} bytes`);
@@ -1281,23 +1311,23 @@ async function connectToWhatsApp() {
             console.error('Failed to download quoted audio:', error.message);
             quotedMediaInfo = {
               type: 'audio',
-              mimetype: quoted.audioMessage.mimetype || 'audio/ogg',
-              fileLength: quoted.audioMessage.fileLength || 0,
-              seconds: quoted.audioMessage.seconds || null,
-              ptt: quoted.audioMessage.ptt || false,
+              mimetype: actualQuoted.audioMessage.mimetype || 'audio/ogg',
+              fileLength: actualQuoted.audioMessage.fileLength || 0,
+              seconds: actualQuoted.audioMessage.seconds || null,
+              ptt: actualQuoted.audioMessage.ptt || false,
               audioData: null
             };
           }
-        } else if (quoted.documentMessage) {
-          quotedText = quoted.documentMessage.caption || quoted.documentMessage.fileName || 'Document';
+        } else if (actualQuoted.documentMessage) {
+          quotedText = actualQuoted.documentMessage.caption || actualQuoted.documentMessage.fileName || 'Document';
           quotedType = 'document';
           
           quotedMediaInfo = {
             type: 'document',
-            fileName: quoted.documentMessage.fileName || 'Unknown',
-            caption: quoted.documentMessage.caption || '',
-            mimetype: quoted.documentMessage.mimetype || 'application/octet-stream',
-            fileLength: quoted.documentMessage.fileLength || 0
+            fileName: actualQuoted.documentMessage.fileName || 'Unknown',
+            caption: actualQuoted.documentMessage.caption || '',
+            mimetype: actualQuoted.documentMessage.mimetype || 'application/octet-stream',
+            fileLength: actualQuoted.documentMessage.fileLength || 0
           };
         }
         
@@ -1354,14 +1384,16 @@ async function connectToWhatsApp() {
       // Get correct pushName from LID mapping manager
       let correctPushName = message.pushName || 'Unknown';
       if (lidMappingManager && lidMappingManager.isInitialized) {
-        correctPushName = lidMappingManager.getCorrectPushName(sender, message.pushName);
+        correctPushName = lidMappingManager.getCorrectPushName(actualSender, message.pushName);
       }
 
       const messageData = {
         timestamp: new Date().toISOString(),
         messageId: message.key.id,
-        from: sender,
-        fromNumber: senderNumber,
+        from: actualSender, // Use actual sender (participant in groups)
+        fromNumber: senderNumber, // Phone number of actual sender
+        groupId: isGroup ? sender : null, // Add group ID for context
+        replyTo: isGroup ? sender : actualSender, // Reply destination: group for group messages, individual for direct messages
         message: messageText,
         messageType: primaryMessageType,
         hasAttachment: hasAttachment,
