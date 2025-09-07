@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "lastUpdated": "2025-09-07T05:34:50.078Z",
+    "totalContacts": 111,
+    "mappedLids": 98,
+    "scannedChats": 1,
+    "lastScanTime": "2025-09-07T05:33:48.285Z"
+  },
+  "contacts": [
+    {
+      "id": "80444922015783@lid",
+      "phoneNumber": "6285712612218",
+      "lid": "80444922015783",
+      "pushName": "Widji",
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T05:34:50.075Z"
+    },
+    {
+      "id": "6281145401505:66@s.whatsapp.net",
+      "phoneNumber": "6281145401505:66",
+      "lid": "6281145401505:66",
+      "pushName": "WhatsApp AI Assistant",
+      "source": "self",
+      "lastSeen": "2025-09-07T05:33:43.277Z"
+    },
+    {
+      "id": "6285712612218@s.whatsapp.net",
+      "phoneNumber": "6285712612218",
+      "lid": "80444922015783",
+      "pushName": null,
+      "source": "message",
+      "chatId": "6285712612218@s.whatsapp.net",
+      "messageTimestamp": {
+        "low": 1757223223,
+        "high": 0,
+        "unsigned": true
+      },
+      "lastSeen": "2025-09-07T05:33:44.553Z"
+    },
+    {
+      "id": "6281145401505@s.whatsapp.net",
+      "phoneNumber": "6281145401505",
+      "lid": null,
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T05:33:58.572Z"
+    },
+    {
+      "id": "120363215673098371@g.us",
+      "phoneNumber": "120363215673098371",
+      "lid": null,
+      "pushName": null,
+      "source": "message",
+      "chatId": "120363215673098371@g.us",
+      "messageTimestamp": {
+        "low": 1757222760,
+        "high": 0,
+        "unsigned": true
+      },
+      "lastSeen": "2025-09-07T05:26:02.348Z"
+    },
+    {
+      "id": "6281280578366@s.whatsapp.net",
+      "phoneNumber": "6281280578366",
+      "lid": null,
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T04:53:49.159Z"
+    },
+    {
+      "id": "628985658148@s.whatsapp.net",
+      "phoneNumber": "628985658148",
+      "lid": null,
+      "pushName": "Sasa",
+      "source": "contact_event",
+      "lastSeen": "2025-09-07T05:15:45.237Z"
+    }
+  ],
+  "lidMappings": {
+    "80444922015783": "6285712612218",
+    "6281145401505:66": "6281145401505:66",
+    "6281145401505:66@s.whatsapp.net": "6281145401505:66",
+    "6285712612218@s.whatsapp.net": "6285712612218",
+    "80444922015783@lid": "6285712612218"
+  },
+  "phoneToLidMappings": {
+    "6285712612218": "80444922015783",
+    "6281145401505:66": "6281145401505:66"
+  },
+  "pushNameMappings": {
+    "80444922015783@lid": "Widji",
+    "80444922015783": "Widji",
+    "6281145401505:66@s.whatsapp.net": "WhatsApp AI Assistant",
+    "6281145401505:66": "WhatsApp AI Assistant",
+    "6281145401505:66@lid": "WhatsApp AI Assistant",
+    "6285712612218@s.whatsapp.net": "Widji",
+    "628985658148@s.whatsapp.net": "Sasa"
+  }
+}

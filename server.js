@@ -7,6 +7,7 @@ const cors = require('cors');
 const path = require('path');
 const P = require('pino');
 const { Client } = require('ldapts');
+const LIDMappingManager = require('./lib/lidMapping');
 require('dotenv').config();
 
 const app = express();
@@ -28,10 +29,8 @@ const ADMIN_NUMBER = '6285712612218';
 let who_i_am = null; // Will be set when connection is established
 let who_i_am_lid = null; // Will store our LID for comparison
 
-// LID to Phone Number Mapping System
-const lidMapping = new Map(); // LID -> Phone Number
-const phoneToLidMapping = new Map(); // Phone Number -> LID
-const pushNameMapping = new Map(); // LID -> Push Name
+// LID Mapping Manager Instance
+let lidMappingManager = null;
 
 // n8n Integration Configuration
 const N8N_WEBHOOK_URL = process.env.N8N_WEBHOOK_URL;
@@ -445,6 +444,80 @@ sendDefaultReply = async function(recipient, isGroupMessage) {
   }
 };
 
+// Media Processing Functions
+
+// Process individual media attachment with support for multiple files
+async function processMediaAttachment(message, mediaType, mediaMessage) {
+  try {
+    let mediaData = null;
+    let attachment = {
+      type: mediaType,
+      caption: mediaMessage.caption || '',
+      mimetype: mediaMessage.mimetype || getDefaultMimetype(mediaType),
+      fileLength: mediaMessage.fileLength || 0,
+      fileName: mediaMessage.fileName || null,
+      error: null
+    };
+
+    // Download media data
+    try {
+      const mediaBuffer = await downloadMediaMessage(message, 'buffer', {});
+      mediaData = mediaBuffer ? mediaBuffer.toString('base64') : null;
+      
+      // Add type-specific properties
+      switch (mediaType) {
+        case 'image':
+          attachment.imageData = mediaData;
+          attachment.width = mediaMessage.width || null;
+          attachment.height = mediaMessage.height || null;
+          break;
+        case 'video':
+          attachment.videoData = mediaData;
+          attachment.seconds = mediaMessage.seconds || 0;
+          attachment.width = mediaMessage.width || null;
+          attachment.height = mediaMessage.height || null;
+          break;
+        case 'audio':
+          attachment.audioData = mediaData;
+          attachment.seconds = mediaMessage.seconds || 0;
+          attachment.ptt = mediaMessage.ptt || false;
+          break;
+        case 'document':
+          attachment.documentData = mediaData;
+          attachment.fileName = mediaMessage.fileName || 'Unknown file';
+          break;
+      }
+      
+      console.log(`${mediaType} downloaded successfully, size:`, mediaBuffer ? mediaBuffer.length : 0, 'bytes');
+    } catch (downloadError) {
+      console.error(`Error downloading ${mediaType}:`, downloadError);
+      attachment.error = `Failed to download ${mediaType}`;
+    }
+    
+    return attachment;
+  } catch (error) {
+    console.error(`Error processing ${mediaType} attachment:`, error);
+    return {
+      type: mediaType,
+      error: `Failed to process ${mediaType}`,
+      caption: mediaMessage.caption || '',
+      mimetype: mediaMessage.mimetype || getDefaultMimetype(mediaType),
+      fileLength: mediaMessage.fileLength || 0
+    };
+  }
+}
+
+// Get default mimetype for media type
+function getDefaultMimetype(mediaType) {
+  const defaults = {
+    image: 'image/jpeg',
+    video: 'video/mp4',
+    audio: 'audio/ogg',
+    document: 'application/octet-stream'
+  };
+  return defaults[mediaType] || 'application/octet-stream';
+}
+
 // LDAP Functions for Active Directory Integration
 
 // Initialize LDAP connection with retry logic
@@ -523,7 +596,9 @@ async function searchUserInAD(phoneNumber) {
         scope: 'sub',
         filter: searchFilter,
         attributes: [
-          'displayName', 'department', 'gender', 'mail'
+          'displayName', 'department', 'gender', 'mail', 'title', 
+          'telephoneNumber', 'mobile', 'company', 'manager', 
+          'employeeID', 'sAMAccountName', 'userPrincipalName'
         ]
       };
       
@@ -536,7 +611,17 @@ async function searchUserInAD(phoneNumber) {
           name: user.displayName,
           gender: user.gender,
           email: user.mail,
-          department: user.department
+          department: user.department,
+          title: user.title,
+          telephoneNumber: user.telephoneNumber,
+          mobile: user.mobile,
+          company: user.company,
+          manager: user.manager,
+          employeeID: user.employeeID,
+          username: user.sAMAccountName,
+          userPrincipalName: user.userPrincipalName,
+          searchedPhone: phoneNumber,
+          timestamp: new Date().toISOString()
         };
       }
       
@@ -582,125 +667,75 @@ process.on('SIGTERM', async () => {
   }
 });
 
-// Function to convert LID to phone number
+// Function to convert LID to phone number (using LID Mapping Manager)
 function lidToPhoneNumber(lid) {
-  if (!lid) return null;
-  
-  // Check if we have this LID in our mapping
-  if (lidMapping.has(lid)) {
-    return lidMapping.get(lid);
+  if (!lidMappingManager) {
+    console.warn('LID Mapping Manager not initialized, using fallback');
+    return lid ? lid.split('@')[0] : null;
   }
-  
-  // Remove @s.whatsapp.net, @g.us, or @lid suffix
-  const cleanLid = lid.split('@')[0];
-  
-  // Check if we have the clean LID in our mapping
-  if (lidMapping.has(cleanLid)) {
-    return lidMapping.get(cleanLid);
-  }
-  
-  // Handle @lid suffix format - these are typically just the phone number
-  if (lid.endsWith('@lid')) {
-    // For @lid format, the cleanLid is usually the phone number itself
-    if (/^\d+$/.test(cleanLid)) {
-      // Store this mapping for future use
-      lidMapping.set(cleanLid, cleanLid);
-      lidMapping.set(lid, cleanLid);
-      phoneToLidMapping.set(cleanLid, cleanLid);
-      return cleanLid;
-    }
-  }
-  
-  // LID format is typically: phoneNumber:deviceId or phoneNumber.deviceId
-  // Extract the phone number part (before : or .)
-  const phoneMatch = cleanLid.match(/^(\d+)[:.]?/);
-  if (phoneMatch && phoneMatch[1]) {
-    const phoneNumber = phoneMatch[1];
-    // Store this mapping for future use
-    lidMapping.set(cleanLid, phoneNumber);
-    lidMapping.set(lid, phoneNumber);
-    phoneToLidMapping.set(phoneNumber, cleanLid);
-    return phoneNumber;
-  }
-  
-  // If it's already a phone number, return as is
-  if (/^\d+$/.test(cleanLid)) {
-    return cleanLid;
-  }
-  
-  return cleanLid; // Return original if no pattern matches
+  return lidMappingManager.lidToPhoneNumber(lid);
 }
 
-// Function to update LID mapping from contact info
+// Function to update LID mapping from contact info (using LID Mapping Manager)
 function updateLidMapping(contacts) {
-  if (!contacts || !Array.isArray(contacts)) return;
-  
-  contacts.forEach(contact => {
-    if (contact.id && contact.notify) {
-      const phoneNumber = lidToPhoneNumber(contact.id);
-      const cleanLid = contact.id.split('@')[0];
-      
-      // Store mappings
-      lidMapping.set(cleanLid, phoneNumber);
-      lidMapping.set(contact.id, phoneNumber);
-      phoneToLidMapping.set(phoneNumber, cleanLid);
-      pushNameMapping.set(cleanLid, contact.notify);
-      
-      console.log(`Mapped LID: ${cleanLid} -> Phone: ${phoneNumber} (${contact.notify})`);
-    }
-  });
+  if (!lidMappingManager) {
+    console.warn('LID Mapping Manager not initialized, skipping contact update');
+    return;
+  }
+  lidMappingManager.updateContactMappings(contacts);
 }
 
-// Function to check if a LID belongs to our API number
+// Function to check if a LID belongs to our API number (using LID Mapping Manager)
 function isOurApiNumber(lid) {
   if (!lid || !who_i_am) {
-    console.log(`isOurApiNumber: Invalid input - lid: ${lid}, who_i_am: ${who_i_am}`);
+    console.log(`🔍 isOurApiNumber: Invalid input - lid: ${lid}, who_i_am: ${who_i_am}`);
     return false;
   }
   
-  const cleanLid = lid.split('@')[0];
-  console.log(`isOurApiNumber: Checking lid: ${lid}, cleanLid: ${cleanLid}, who_i_am: ${who_i_am}, who_i_am_lid: ${who_i_am_lid}`);
+  console.log(`🔍 isOurApiNumber: Checking if ${lid} belongs to our API`);
+  console.log(`🔍 Current bot values: who_i_am=${who_i_am}, who_i_am_lid=${who_i_am_lid}`);
   
-  // Direct comparison with our LID
-  if (who_i_am_lid && (cleanLid === who_i_am_lid || lid === who_i_am_lid)) {
-    console.log(`isOurApiNumber: Direct LID match found`);
+  const cleanLid = lid.split('@')[0];
+  
+  // Extract base phone number from our bot's ID (remove device suffix like :66)
+  const ourBasePhone = who_i_am ? who_i_am.split(':')[0] : null;
+  const ourLidBase = who_i_am_lid ? who_i_am_lid.split(':')[0] : null;
+  
+  console.log(`🔍 Base phone numbers: ourBasePhone=${ourBasePhone}, ourLidBase=${ourLidBase}`);
+  
+  // Check direct matches first
+  if (cleanLid === who_i_am || cleanLid === who_i_am_lid) {
+    console.log(`🔍 Direct match found: ${cleanLid}`);
     return true;
   }
   
-  // Handle @lid suffix format - extract the LID part
-  if (lid.endsWith('@lid')) {
-    const lidPart = cleanLid;
-    console.log(`isOurApiNumber: Processing @lid format - lidPart: ${lidPart}`);
+  // Check base phone number matches (without device suffix)
+  if (ourBasePhone && cleanLid === ourBasePhone) {
+    console.log(`🔍 Base phone match found: ${cleanLid} matches ${ourBasePhone}`);
+    return true;
+  }
+  
+  if (ourLidBase && cleanLid === ourLidBase) {
+    console.log(`🔍 Base LID match found: ${cleanLid} matches ${ourLidBase}`);
+    return true;
+  }
+  
+  // Use LID mapping manager if available
+  if (lidMappingManager) {
+    const result = lidMappingManager.isPhoneNumber(lid, who_i_am);
+    console.log(`🔍 LID Manager result: LID ${lid} belongs to our API number ${who_i_am}: ${result}`);
+    if (result) return true;
     
-    // Check if this LID maps to our phone number
-    const phoneNumber = lidToPhoneNumber(lidPart);
-    console.log(`isOurApiNumber: LID ${lidPart} maps to phone: ${phoneNumber}`);
-    
-    if (phoneNumber === who_i_am) {
-      console.log(`isOurApiNumber: Phone number match found via LID mapping`);
-      return true;
-    }
-    
-    // Also check if the LID part matches our LID directly
-    if (who_i_am_lid && lidPart === who_i_am_lid.split(':')[0]) {
-      console.log(`isOurApiNumber: LID part matches our LID base`);
-      return true;
-    }
-    
-    // Debug: Check if this could be an alternative LID format
-    console.log(`isOurApiNumber: Debugging - lidPart: ${lidPart}, who_i_am: ${who_i_am}, who_i_am_lid: ${who_i_am_lid}`);
-    console.log(`isOurApiNumber: Debugging - lidPart === who_i_am: ${lidPart === who_i_am}`);
-    if (who_i_am_lid) {
-      console.log(`isOurApiNumber: Debugging - lidPart === who_i_am_lid.split(':')[0]: ${lidPart === who_i_am_lid.split(':')[0]}`);
+    // Also check with base phone number
+    if (ourBasePhone) {
+      const baseResult = lidMappingManager.isPhoneNumber(lid, ourBasePhone);
+      console.log(`🔍 LID Manager base result: LID ${lid} belongs to base number ${ourBasePhone}: ${baseResult}`);
+      if (baseResult) return true;
     }
   }
   
-  // Check if the LID maps to our phone number
-  const phoneNumber = lidToPhoneNumber(lid);
-  console.log(`isOurApiNumber: Final check - LID ${lid} maps to phone: ${phoneNumber}`);
-  const result = phoneNumber === who_i_am;
-  console.log(`isOurApiNumber: Final result: ${result}`);
-  return result;
+  console.log(`🔍 No match found for ${lid}`);
+  return false;
 }
 
 // Middleware
@@ -787,6 +822,101 @@ app.post('/api/send-groupmessage', async (req, res) => {
   }
 });
 
+// LID Mapping API Endpoints
+app.get('/api/lid/stats', (req, res) => {
+  try {
+    if (!lidMappingManager) {
+      return res.status(503).json({ error: 'LID Mapping Manager not initialized' });
+    }
+    
+    const stats = lidMappingManager.getStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    console.error('Error getting LID stats:', error);
+    res.status(500).json({ error: 'Failed to get LID mapping statistics' });
+  }
+});
+
+app.get('/api/lid/contacts', (req, res) => {
+  try {
+    if (!lidMappingManager) {
+      return res.status(503).json({ error: 'LID Mapping Manager not initialized' });
+    }
+    
+    const { search, type } = req.query;
+    let contacts;
+    
+    if (search && type === 'phone') {
+      contacts = lidMappingManager.searchByPhoneNumber(search);
+    } else if (search && type === 'name') {
+      contacts = lidMappingManager.searchByPushName(search);
+    } else {
+      contacts = lidMappingManager.getAllContacts();
+    }
+    
+    res.json({ success: true, contacts, total: contacts.length });
+  } catch (error) {
+    console.error('Error getting contacts:', error);
+    res.status(500).json({ error: 'Failed to get contacts' });
+  }
+});
+
+app.get('/api/lid/contact/:id', (req, res) => {
+  try {
+    if (!lidMappingManager) {
+      return res.status(503).json({ error: 'LID Mapping Manager not initialized' });
+    }
+    
+    const { id } = req.params;
+    const contact = lidMappingManager.getContactInfo(id);
+    
+    if (!contact) {
+      return res.status(404).json({ error: 'Contact not found' });
+    }
+    
+    res.json({ success: true, contact });
+  } catch (error) {
+    console.error('Error getting contact:', error);
+    res.status(500).json({ error: 'Failed to get contact information' });
+  }
+});
+
+app.post('/api/lid/scan', async (req, res) => {
+  try {
+    if (!lidMappingManager) {
+      return res.status(503).json({ error: 'LID Mapping Manager not initialized' });
+    }
+    
+    // Start async scan
+    lidMappingManager.scanAllChats().then(() => {
+      console.log('✅ Manual chat scan completed');
+    }).catch(error => {
+      console.error('❌ Error during manual chat scan:', error);
+    });
+    
+    res.json({ success: true, message: 'Chat scan started. Check logs for progress.' });
+  } catch (error) {
+    console.error('Error starting chat scan:', error);
+    res.status(500).json({ error: 'Failed to start chat scan' });
+  }
+});
+
+app.post('/api/lid/export', async (req, res) => {
+  try {
+    if (!lidMappingManager) {
+      return res.status(503).json({ error: 'LID Mapping Manager not initialized' });
+    }
+    
+    const { format = 'json' } = req.body;
+    await lidMappingManager.exportContacts(format);
+    
+    res.json({ success: true, message: `Contacts exported in ${format} format` });
+  } catch (error) {
+    console.error('Error exporting contacts:', error);
+    res.status(500).json({ error: 'Failed to export contacts' });
+  }
+});
+
 // WhatsApp Connection Function
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -836,26 +966,70 @@ async function connectToWhatsApp() {
       
       console.log('Connected as:', who_i_am, '(Raw ID:', rawUserId, ', LID:', who_i_am_lid, ')');
       
-      // Store our own mapping
-      if (who_i_am_lid && who_i_am) {
-        lidMapping.set(who_i_am_lid, who_i_am);
-        phoneToLidMapping.set(who_i_am, who_i_am_lid);
-        
-        // Add manual mapping for alternative LID format
-        // This LID 214869110423796 appears to be an alternative format for our bot
-        lidMapping.set('214869110423796', who_i_am);
-        lidMapping.set('214869110423796@lid', who_i_am);
-        console.log('Added manual LID mapping: 214869110423796 -> ', who_i_am);
-      }
+      // Test bot self-recognition immediately after connection
+      console.log('\n=== TESTING BOT SELF-RECOGNITION ===');
+      const testMentions = [
+        '6281145401505@s.whatsapp.net',
+        '6281145401505',
+        who_i_am,
+        who_i_am_lid
+      ];
       
-      // Sync contacts to build LID mapping
+      testMentions.forEach(mention => {
+        if (mention) {
+          const result = isOurApiNumber(mention);
+          console.log(`Test: ${mention} -> ${result ? '✅ RECOGNIZED' : '❌ NOT RECOGNIZED'}`);
+        }
+      });
+      console.log('=== END SELF-RECOGNITION TEST ===\n');
+      console.log('=== WHATSAPP USER OBJECT ===');
+      console.log('User Object:', JSON.stringify(sock.user, null, 2));
+      console.log('=== END USER OBJECT ===');
+      
+      // Initialize LID Mapping Manager
       try {
-        console.log('Syncing contacts for LID mapping...');
-        // Note: sock.getContacts() is not available in current Baileys version
-        // We'll build the mapping as contacts come in through events
-        console.log('LID mapping will be built as contacts are received through events');
+        lidMappingManager = new LIDMappingManager();
+        await lidMappingManager.initialize(sock);
+        
+        // Clean up false pushName mappings
+    lidMappingManager.cleanupFalseMappings();
+    
+    // Link LID contacts with phone number contacts
+    lidMappingManager.linkLidToPhoneContacts();
+    
+    await lidMappingManager.saveContactsToFile();
+        
+        // Store our own mapping with configurable pushName
+        if (who_i_am_lid && who_i_am) {
+          // Use environment variable for bot name, fallback to 'AI Assistant'
+          const ourPushName = process.env.BOT_DISPLAY_NAME || 'AI Assistant';
+          
+          console.log('🤖 Setting AI bot pushName to:', ourPushName);
+          
+          lidMappingManager.storeContactInfo({
+            id: rawUserId,
+            phoneNumber: who_i_am,
+            lid: who_i_am_lid,
+            pushName: ourPushName,
+            source: 'self',
+            lastSeen: new Date().toISOString()
+          });
+          console.log('✅ Stored our own LID mapping:', who_i_am_lid, '->', who_i_am, 'with pushName:', ourPushName);
+        }
+        
+        // Start comprehensive chat scan
+        console.log('🚀 Starting comprehensive chat scan for LID mapping...');
+        setTimeout(async () => {
+          try {
+            await lidMappingManager.scanAllChats();
+            console.log('✅ Initial chat scan completed');
+          } catch (error) {
+            console.error('❌ Error during initial chat scan:', error);
+          }
+        }, 5000); // Wait 5 seconds after connection to start scan
+        
       } catch (error) {
-        console.error('Failed to sync contacts for LID mapping:', error);
+        console.error('Failed to initialize LID Mapping Manager:', error);
       }
       
       if (soket) {
@@ -897,120 +1071,50 @@ async function connectToWhatsApp() {
         console.log('Ignoring status broadcast message');
         return;
       }
-      // Enhanced media message handling
+      // Enhanced media message handling with multiple attachment support
       let messageText;
       let mediaInfo = null;
+      let attachments = []; // Array to store multiple attachments
       
       if (message.message?.conversation) {
         messageText = message.message.conversation;
       } else if (message.message?.extendedTextMessage?.text) {
         messageText = message.message.extendedTextMessage.text;
+      } else if (message.message?.ephemeralMessage?.message?.conversation) {
+        messageText = message.message.ephemeralMessage.message.conversation;
+      } else if (message.message?.ephemeralMessage?.message?.extendedTextMessage?.text) {
+        messageText = message.message.ephemeralMessage.message.extendedTextMessage.text;
       } else if (message.message?.imageMessage) {
-        try {
-          // Download the image media
-          const imageBuffer = await downloadMediaMessage(message, 'buffer', {});
-          const imageBase64 = imageBuffer ? imageBuffer.toString('base64') : null;
-          
-          mediaInfo = {
-            type: 'image',
-            caption: message.message.imageMessage.caption || '',
-            mimetype: message.message.imageMessage.mimetype || 'image/jpeg',
-            fileLength: message.message.imageMessage.fileLength || 0,
-            imageData: imageBase64,
-            width: message.message.imageMessage.width || null,
-            height: message.message.imageMessage.height || null
-          };
-          messageText = mediaInfo.caption || 'Image message received';
-          console.log('Image downloaded successfully, size:', imageBuffer ? imageBuffer.length : 0, 'bytes');
-        } catch (error) {
-          console.error('Error downloading image:', error);
-          mediaInfo = {
-            type: 'image',
-            caption: message.message.imageMessage.caption || '',
-            mimetype: message.message.imageMessage.mimetype || 'image/jpeg',
-            fileLength: message.message.imageMessage.fileLength || 0,
-            imageData: null,
-            error: 'Failed to download image'
-          };
-          messageText = mediaInfo.caption || 'Image message received (download failed)';
-        }
+        const attachment = await processMediaAttachment(message, 'image', message.message.imageMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || 'Image message received';
       } else if (message.message?.videoMessage) {
-        try {
-          // Download the video media
-          const videoBuffer = await downloadMediaMessage(message, 'buffer', {});
-          const videoBase64 = videoBuffer ? videoBuffer.toString('base64') : null;
-          
-          mediaInfo = {
-            type: 'video',
-            caption: message.message.videoMessage.caption || '',
-            mimetype: message.message.videoMessage.mimetype || 'video/mp4',
-            fileLength: message.message.videoMessage.fileLength || 0,
-            seconds: message.message.videoMessage.seconds || 0,
-            videoData: videoBase64,
-            width: message.message.videoMessage.width || null,
-            height: message.message.videoMessage.height || null
-          };
-          messageText = mediaInfo.caption || 'Video message received';
-          console.log('Video downloaded successfully, size:', videoBuffer ? videoBuffer.length : 0, 'bytes');
-        } catch (error) {
-          console.error('Error downloading video:', error);
-          mediaInfo = {
-            type: 'video',
-            caption: message.message.videoMessage.caption || '',
-            mimetype: message.message.videoMessage.mimetype || 'video/mp4',
-            fileLength: message.message.videoMessage.fileLength || 0,
-            seconds: message.message.videoMessage.seconds || 0,
-            videoData: null,
-            error: 'Failed to download video'
-          };
-          messageText = mediaInfo.caption || 'Video message received (download failed)';
-        }
+        const attachment = await processMediaAttachment(message, 'video', message.message.videoMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || 'Video message received';
       } else if (message.message?.audioMessage) {
-        try {
-          // Download the audio media
-          const audioBuffer = await downloadMediaMessage(message, 'buffer', {});
-          const audioBase64 = audioBuffer ? audioBuffer.toString('base64') : null;
-          
-          mediaInfo = {
-            type: 'audio',
-            mimetype: message.message.audioMessage.mimetype || 'audio/ogg',
-            fileLength: message.message.audioMessage.fileLength || 0,
-            seconds: message.message.audioMessage.seconds || 0,
-            ptt: message.message.audioMessage.ptt || false,
-            audioData: audioBase64
-          };
-          messageText = mediaInfo.ptt ? 'Voice message received' : 'Audio message received';
-          console.log('Audio downloaded successfully, size:', audioBuffer ? audioBuffer.length : 0, 'bytes');
-        } catch (error) {
-          console.error('Error downloading audio:', error);
-          mediaInfo = {
-            type: 'audio',
-            mimetype: message.message.audioMessage.mimetype || 'audio/ogg',
-            fileLength: message.message.audioMessage.fileLength || 0,
-            seconds: message.message.audioMessage.seconds || 0,
-            ptt: message.message.audioMessage.ptt || false,
-            audioData: null,
-            error: 'Failed to download audio'
-          };
-          messageText = mediaInfo.ptt ? 'Voice message received (download failed)' : 'Audio message received (download failed)';
-        }
+        const attachment = await processMediaAttachment(message, 'audio', message.message.audioMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.ptt ? 'Voice message received' : 'Audio message received';
       } else if (message.message?.documentMessage) {
-        mediaInfo = {
-          type: 'document',
-          caption: message.message.documentMessage.caption || '',
-          mimetype: message.message.documentMessage.mimetype || 'application/octet-stream',
-          fileLength: message.message.documentMessage.fileLength || 0,
-          fileName: message.message.documentMessage.fileName || 'Unknown file'
-        };
-        messageText = mediaInfo.caption || `Document: ${mediaInfo.fileName}`;
+        const attachment = await processMediaAttachment(message, 'document', message.message.documentMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || `Document: ${attachment.fileName}`;
       } else {
         messageText = 'Media message received';
       }
       
       const sender = message.key.remoteJid;
       const formattedMessage = `**From:** ${sender}\n**Message:** ${messageText}`;
-      
-      console.log('New message:', formattedMessage);
+
+        console.log('New message:', formattedMessage);
+        console.log('=== RAW BAILEYS MESSAGE OBJECT ===');
+        console.log(JSON.stringify(message, null, 2));
+        console.log('=== END RAW MESSAGE ===');
       
       if (soket) {
         soket.emit('message', formattedMessage);
@@ -1028,22 +1132,32 @@ async function connectToWhatsApp() {
         shouldReply = true;
       }
       
-      // Check if we should reply to group messages (only when tagged)
+      // Check if we should reply to group messages (when tagged) - treat like direct messages
       if (isGroup && who_i_am) {
+        // Extract base phone number (without device suffix like :66)
+        const ourBasePhone = who_i_am.split(':')[0];
+        const ourLidBase = who_i_am_lid ? who_i_am_lid.split(':')[0] : null;
+        
         // Check for mentions in the message text
         const textMentions = [
-          messageText.includes(`@${who_i_am}`),
-          who_i_am_lid && messageText.includes(`@${who_i_am_lid}`)
+          messageText.includes(`@${who_i_am}`),        // Full format with device suffix
+          messageText.includes(`@${ourBasePhone}`),    // Base phone number (most common)
+          who_i_am_lid && messageText.includes(`@${who_i_am_lid}`),
+          ourLidBase && messageText.includes(`@${ourLidBase}`)
         ];
         
-        // Check for mentions in contextInfo
-        const mentionedJids = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+        // Check for mentions in contextInfo (including ephemeral messages)
+        const mentionedJids = message.message?.extendedTextMessage?.contextInfo?.mentionedJid || 
+                             message.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo?.mentionedJid || 
+                             [];
         
         console.log('Checking mentions:', {
           messageText,
           mentionedJids,
           who_i_am,
           who_i_am_lid,
+          ourBasePhone,
+          ourLidBase,
           textMentions
         });
         
@@ -1054,11 +1168,17 @@ async function connectToWhatsApp() {
           return isOurNumber;
         });
         
-        shouldReply = textMentions.some(Boolean) || jidMentions;
+        // If tagged in group, treat like direct message (reply regardless of sender)
+        const isTagged = textMentions.some(Boolean) || jidMentions;
+        if (isTagged) {
+          shouldReply = true;
+          console.log(`✅ Bot tagged in group by ${senderNumber} - treating as direct message`);
+        }
         
         console.log('Tag detection result:', {
           textMentions,
           jidMentions,
+          isTagged,
           shouldReply
         });
       }
@@ -1231,6 +1351,12 @@ async function connectToWhatsApp() {
         primaryMessageType = 'unknown';
       }
 
+      // Get correct pushName from LID mapping manager
+      let correctPushName = message.pushName || 'Unknown';
+      if (lidMappingManager && lidMappingManager.isInitialized) {
+        correctPushName = lidMappingManager.getCorrectPushName(sender, message.pushName);
+      }
+
       const messageData = {
         timestamp: new Date().toISOString(),
         messageId: message.key.id,
@@ -1241,14 +1367,27 @@ async function connectToWhatsApp() {
         hasAttachment: hasAttachment,
         attachmentType: attachmentType,
         media: universalMedia,
+        mediaInfo: mediaInfo, // Legacy single media support
+        attachments: attachments, // New multiple attachments support
+        attachmentCount: attachments.length,
         isGroup: isGroup,
-        pushName: message.pushName || 'Unknown',
+        pushName: correctPushName,
         quotedMessage: quotedMessageInfo,
         mentionedJids: message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [],
         botNumber: who_i_am,
         botLid: who_i_am_lid,
         shouldReply: shouldReply
       };
+
+      // Process contact information with LID mapping manager
+      if (lidMappingManager && lidMappingManager.isInitialized) {
+        try {
+          await lidMappingManager.processMessage(message);
+          console.log(`📝 Contact processed: ${senderNumber} (${message.pushName || 'No name'})`);
+        } catch (error) {
+          console.error('Error processing contact with LID mapping:', error.message);
+        }
+      }
 
       // If we should reply, try to buffer the message first
       if (shouldReply) {
