@@ -32,8 +32,15 @@ RUN mkdir -p auth_info_baileys && \
 RUN mkdir -p docs data && \
     chown -R node:node docs data
 
-# Switch to non-root user
-USER node
+# Create startup script to fix permissions at runtime
+RUN echo '#!/bin/sh' > /app/start.sh && \
+    echo 'mkdir -p /app/auth_info_baileys /app/docs /app/data' >> /app/start.sh && \
+    echo 'chown -R node:node /app/auth_info_baileys /app/docs /app/data' >> /app/start.sh && \
+    echo 'exec su-exec node "$@"' >> /app/start.sh && \
+    chmod +x /app/start.sh
+
+# Install su-exec for user switching
+RUN apk add --no-cache su-exec
 
 # Expose port (configurable via environment variable)
 EXPOSE ${PORT:-8193}
@@ -42,5 +49,5 @@ EXPOSE ${PORT:-8193}
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8193}/api/status || exit 1
 
-# Start the application
-CMD ["node", "server.js"]
+# Start the application with permission fix
+CMD ["/app/start.sh", "node", "server.js"]
