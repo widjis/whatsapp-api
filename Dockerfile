@@ -36,11 +36,11 @@ RUN mkdir -p docs data && \
 USER node
 
 # Expose port (configurable via environment variable)
-EXPOSE ${PORT:-8192}
+EXPOSE ${PORT:-8193}
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8192}/api/status || exit 1
+    CMD curl -f http://localhost:${PORT:-8193}/api/status || exit 1
 
 # Start the application
 CMD ["node", "server.js"]
