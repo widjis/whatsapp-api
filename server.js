@@ -116,6 +116,17 @@ function flushMessageBuffer(phoneNumber) {
   // Combine all messages with newline separators
   const combinedMessage = buffer.messages.map(msg => msg.message).join('\n');
   
+  // Check if combined message is a command before processing
+  if (combinedMessage && /^\//.test(combinedMessage.trim())) {
+    console.log('Skipping n8n processing for buffered chatbot command:', combinedMessage.trim());
+    // Clear the buffer
+    if (buffer.timer) {
+      clearTimeout(buffer.timer);
+    }
+    messageBuffers.delete(phoneNumber);
+    return; // Skip processing for commands
+  }
+  
   // Create combined message data using the first message as template
   const firstMessage = buffer.messages[0];
   const combinedData = {
@@ -140,10 +151,9 @@ function flushMessageBuffer(phoneNumber) {
       console.error('Error processing buffered message for reply:', error.message);
     });
   } else {
-    // Use the processMessageForLogging function (need to make it accessible)
-    processMessageForLogging(combinedData).catch(error => {
-      console.error('Error processing buffered message for logging:', error.message);
-    });
+    // If shouldReply is false, skip all processing including n8n logging
+    console.log(`Skipping n8n processing for buffered message (shouldReply=false): ${phoneNumber}`);
+    // No processing needed when shouldReply is false
   }
 }
 
@@ -1138,11 +1148,17 @@ async function connectToWhatsApp() {
       
       console.log('Processing message from:', senderNumber, '(Raw sender:', sender, ')');
       
-      // Check if we should reply to direct messages from admin
-      // if (!isGroup && senderNumber === ADMIN_NUMBER) {
-      //   console.log('Admin message detected, treating as direct message');
-      //   shouldReply = true;
-      // }
+      // Check if we should reply to direct messages from any user
+      if (!isGroup) {
+        // Check if message starts with / (chatbot command) - ignore these
+        if (messageText && /^\//.test(messageText.trim())) {
+          console.log('Ignoring chatbot command:', messageText.trim());
+          return; // Skip processing this message
+        }
+        
+        console.log('Direct message detected, will reply');
+        shouldReply = true;
+      }
       
       // Check if we should reply to group messages (when tagged) - treat like direct messages
       if (isGroup && who_i_am) {
@@ -1183,6 +1199,11 @@ async function connectToWhatsApp() {
         // If tagged in group, treat like direct message (reply regardless of sender)
         const isTagged = textMentions.some(Boolean) || jidMentions;
         if (isTagged) {
+          // Check if message starts with "/" (chatbot command) - ignore these
+          if (messageText.startsWith('/')) {
+            console.log('Ignoring group chatbot command:', messageText);
+            return;
+          }
           shouldReply = true;
         }
         
@@ -1438,6 +1459,12 @@ async function connectToWhatsApp() {
           await sendDefaultReply(sender, isGroup);
         }
       } else {
+        // Check if message is a command before logging
+        if (messageText && /^\//.test(messageText.trim())) {
+          console.log('Skipping n8n logging for chatbot command:', messageText.trim());
+          return; // Skip logging for commands
+        }
+        
         // For non-reply messages, try buffering for logging
         const wasBuffered = addToMessageBuffer(senderNumber, messageData);
         
@@ -1473,14 +1500,23 @@ server.listen(PORT, () => {
   connectToWhatsApp();
 });
 
-// Graceful shutdown
+// Graceful shutdown with timeout
 process.on('SIGINT', () => {
   console.log('Shutting down gracefully...');
+  
+  // Force exit after 5 seconds if graceful shutdown fails
+  const forceExitTimer = setTimeout(() => {
+    console.log('Force exiting after timeout...');
+    process.exit(1);
+  }, 5000);
+  
   if (sock) {
     sock.end();
   }
+  
   server.close(() => {
     console.log('Server closed');
+    clearTimeout(forceExitTimer);
     process.exit(0);
   });
 });

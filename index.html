@@ -23,17 +23,7 @@
     h1 {
       margin-bottom: 20px;
     }
-    #messages {
-      list-style: none;
-      padding: 0;
-      margin-bottom: 20px;
-    }
-    #messages li {
-      padding: 8px;
-      margin-bottom: 10px;
-      background: #efefef;
-      border-radius: 4px;
-    }
+
     #qrcode-container {
       display: flex;
       justify-content: center;
@@ -67,7 +57,7 @@
     <img src="https://img2.lokercepat.id/files/2024-03-26/pt-merdeka-tsingshan-indonesia-279.jpg" alt="Logo" style="width:100%;max-width:300px;margin-bottom:20px;">
     <h1>MTI WhatsApp API</h1>
     <div id="status">Connecting...</div>
-    <ul id="messages"></ul>
+
     <div id="qrcode-container">
       <img id="qrcode" src="" alt="QR Code">
     </div>
@@ -83,24 +73,7 @@
       updateStatus('Connected to server');
     });
 
-    function renderFormattedMessage(text) {
-      return text
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/__(.*?)__/g, '<em>$1</em>')
-        .replace(/~~(.*?)~~/g, '<del>$1</del>')
-        .replace(/\n/g, '<br>');
-    }
 
-    socket.on('message', function(msg) {
-      console.log('Message received:', msg);
-      const messages = document.getElementById('messages');
-      if (messages) {
-        const li = document.createElement('li');
-        li.innerHTML = renderFormattedMessage(msg);
-        messages.appendChild(li);
-        updateStatus('New message received');
-      }
-    });
 
     socket.on('qr', function(src) {
       console.log('QR code received:', src);

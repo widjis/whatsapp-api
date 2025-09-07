@@ -28,9 +28,9 @@ COPY . .
 RUN mkdir -p auth_info_baileys && \
     chown -R node:node auth_info_baileys
 
-# Create docs directory
-RUN mkdir -p docs && \
-    chown -R node:node docs
+# Create docs and data directories
+RUN mkdir -p docs data && \
+    chown -R node:node docs data
 
 # Switch to non-root user
 USER node

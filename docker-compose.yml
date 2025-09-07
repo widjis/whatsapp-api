@@ -16,6 +16,8 @@ services:
       - ./auth_info_baileys:/app/auth_info_baileys
       # Persist documentation
       - ./docs:/app/docs
+      # Persist application data (contacts, etc.)
+      - ./data:/app/data
     restart: unless-stopped
     networks:
       - whatsapp-network
