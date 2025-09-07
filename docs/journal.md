@@ -3096,6 +3096,69 @@ Implemented unified chat behavior, enhanced Active Directory recognition, and mu
 
 ---
 
+## 2025-09-07 17:09:52 - Disabled AD Authentication and Added Hardcoded Master User
+
+### Context
+User requested to comment out Active Directory checking and define "Bos Widji" as the master user for all message processing.
+
+### What was done
+1. **Commented Out AD Integration**:
+   - Disabled `searchUserInAD()` function calls in both `processMessageForReply` and `processMessageForLogging`
+   - Added comments explaining the change
+   - Preserved original AD code for potential future restoration
+
+2. **Implemented Hardcoded Master User**:
+   - Created static user object for "Bos Widji"
+   - Defined comprehensive user profile with all AD fields
+   - Applied to both reply and logging message processing functions
+
+3. **Master User Profile**:
+   ```javascript
+   const adUserInfo = {
+     found: true,
+     name: "Bos Widji",
+     gender: "Male",
+     email: "bos.widji@company.com",
+     department: "Management",
+     title: "Boss",
+     telephoneNumber: data.fromNumber,
+     mobile: data.fromNumber,
+     company: "Company",
+     manager: "Self",
+     employeeID: "MASTER001",
+     username: "bos.widji",
+     userPrincipalName: "bos.widji@company.com",
+     searchedPhone: data.fromNumber,
+     timestamp: new Date().toISOString()
+   };
+   ```
+
+### Technical Details
+- **Performance Improvement**: Eliminated LDAP connection overhead and timeout issues
+- **Consistent Identity**: All messages now appear to come from "Bos Widji" regardless of actual sender
+- **Webhook Compatibility**: Maintains same data structure for n8n integration
+- **Phone Number Mapping**: Uses actual sender's phone number for telephoneNumber and mobile fields
+- **Timestamp**: Dynamic timestamp generation for each message
+
+### Files Modified
+- `server.js` - Commented out AD calls and added hardcoded master user in both message processing functions
+- `docs/journal.md` - This documentation entry
+
+### Benefits
+- ✅ Eliminated LDAP connection timeouts and errors
+- ✅ Simplified user management with single master identity
+- ✅ Improved message processing performance
+- ✅ Maintained webhook data structure compatibility
+- ✅ Preserved original AD code for future restoration if needed
+
+### Next Steps
+- Test message processing with new hardcoded user data
+- Monitor webhook delivery with "Bos Widji" identity
+- Verify n8n workflows receive expected user information
+- Consider environment variable for master user configuration if needed
+
+---
+
 ## 2025-09-07 14:18:08 - Critical Fix: Group Message Sender Identification
 
 ### Context

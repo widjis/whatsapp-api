@@ -316,12 +316,31 @@ async function sendToN8N(data) {
 // Message Processing Functions
 processMessageForReply = async function(data) {
   try {
-    // Search for user in Active Directory
-    const adUserInfo = await searchUserInAD(data.fromNumber);
+    // COMMENTED OUT: Search for user in Active Directory
+    // const adUserInfo = await searchUserInAD(data.fromNumber);
+    
+    // HARDCODED MASTER USER: Bos Widji
+    const adUserInfo = {
+      found: true,
+      name: "Bos Widji",
+      gender: "Male",
+      email: "bos.widji@company.com",
+      department: "Management",
+      title: "Boss",
+      telephoneNumber: data.fromNumber,
+      mobile: data.fromNumber,
+      company: "Company",
+      manager: "Self",
+      employeeID: "MASTER001",
+      username: "bos.widji",
+      userPrincipalName: "bos.widji@company.com",
+      searchedPhone: data.fromNumber,
+      timestamp: new Date().toISOString()
+    };
     
     const webhookData = {
       ...data,
-      adUser: adUserInfo // Add Active Directory user information
+      adUser: adUserInfo // Add hardcoded master user information
     };
     
     console.log('Sending message to n8n for response...');
@@ -396,12 +415,31 @@ processMessageForReply = async function(data) {
 
 processMessageForLogging = async function(data) {
   try {
-    // Search for user in Active Directory (for logging)
-    const adUserInfo = await searchUserInAD(data.fromNumber);
+    // COMMENTED OUT: Search for user in Active Directory (for logging)
+    // const adUserInfo = await searchUserInAD(data.fromNumber);
+    
+    // HARDCODED MASTER USER: Bos Widji
+    const adUserInfo = {
+      found: true,
+      name: "Bos Widji",
+      gender: "Male",
+      email: "bos.widji@company.com",
+      department: "Management",
+      title: "Boss",
+      telephoneNumber: data.fromNumber,
+      mobile: data.fromNumber,
+      company: "Company",
+      manager: "Self",
+      employeeID: "MASTER001",
+      username: "bos.widji",
+      userPrincipalName: "bos.widji@company.com",
+      searchedPhone: data.fromNumber,
+      timestamp: new Date().toISOString()
+    };
     
     const webhookData = {
       ...data,
-      adUser: adUserInfo, // Add Active Directory user information
+      adUser: adUserInfo, // Add hardcoded master user information
       shouldReply: false // Indicate this is just for logging
     };
     
