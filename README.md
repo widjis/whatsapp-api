@@ -1,6 +1,6 @@
 # WhatsApp AI API with Baileys
 
-A WhatsApp API implementation using Baileys library with Socket.IO integration for real-time QR code display and message handling.
+A comprehensive WhatsApp API implementation using Baileys library with modular architecture, enhanced media support, LDAP integration, and n8n webhook functionality for enterprise-grade messaging automation.
 
 ## Features
 
@@ -10,6 +10,13 @@ A WhatsApp API implementation using Baileys library with Socket.IO integration f
 - 🌐 Socket.IO integration for real-time updates
 - 📊 Connection status monitoring
 - 🎨 Clean web interface with MTI branding
+- 🏗️ **Modular Architecture** with separated concerns
+- 📎 **Enhanced Media Support** for images, videos, audio, documents
+- 🔐 **LDAP/Active Directory Integration** for enterprise authentication
+- 🔗 **n8n Webhook Integration** for workflow automation
+- 📋 **Quoted Message Support** with media information extraction
+- 🆔 **Advanced LID Mapping** for WhatsApp's privacy updates
+- 🐳 **Docker Support** for containerized deployment
 
 ## Installation
 
@@ -117,22 +124,38 @@ The web interface uses Socket.IO for real-time communication:
 - `message` - New message received or status update
 - `disconnect` - Client disconnected
 
-## Auto-Reply Features
+## Enterprise Features
 
-The API includes intelligent auto-reply functionality:
+### Auto-Reply System
+Intelligent auto-reply functionality with enterprise integration:
 
-### Connection Notifications
-- Automatically sends connection status to admin number (6285712612218) when API connects
+#### Connection Notifications
+- Automatically sends connection status to admin number when API connects
 - Includes API number, timestamp, and connection status
+- LDAP user authentication for admin access
 
-### Direct Message Auto-Reply
-- Responds automatically to direct messages from the admin number
-- Sends welcome message: "Hi, welcome to WhatsApp API system! 🤖"
+#### Direct Message Auto-Reply
+- Responds automatically to direct messages from authenticated users
+- LDAP integration for user verification
+- Customizable welcome messages and responses
 
-### Group Message Handling
-- Only responds to group messages when the API number is tagged/mentioned
-- Uses `@{api_number}` detection or WhatsApp mention system
-- Sends helpful bot response when tagged in groups
+#### Group Message Handling
+- Advanced LID-based mention detection
+- Only responds when API number is tagged/mentioned
+- Enterprise workflow integration via n8n webhooks
+
+### Media Processing
+- **Full Media Download**: Downloads complete media files (images, videos, audio)
+- **Base64 Encoding**: Converts media to base64 for webhook transmission
+- **Metadata Extraction**: Comprehensive media information (type, size, dimensions)
+- **Quoted Message Media**: Extracts media information from quoted messages
+- **Multiple Attachments**: Support for multiple file attachments
+
+### Webhook Integration
+- **n8n Workflow Automation**: Real-time message forwarding to n8n
+- **Dual Webhook Support**: Separate endpoints for replies and logging
+- **Rich Data Structure**: Complete message context with media support
+- **Error Handling**: Robust webhook delivery with retry logic
 
 ## LID (Lidded ID) Support
 
@@ -184,18 +207,52 @@ Due to WhatsApp's updated privacy policy, user numbers in groups are now represe
 
 ```
 whatsapp-ai/
-├── server.js          # Main server file with Baileys integration
-├── index.html         # Web interface for QR code display
-├── package.json       # Project dependencies
-├── .gitignore        # Git ignore file
-└── auth_info_baileys/ # WhatsApp session data (auto-generated)
+├── server.js              # Main server file with modular imports
+├── index.html             # Web interface for QR code display
+├── package.json           # Project dependencies
+├── package-lock.json      # Dependency lock file
+├── .gitignore            # Git ignore file
+├── Dockerfile            # Docker container configuration
+├── docker-compose.yml    # Multi-container setup
+├── docs/
+│   └── journal.md        # Development journal and documentation
+├── lib/                  # Modular architecture components
+│   ├── config.js         # Configuration and environment variables
+│   ├── ldapClient.js     # LDAP/Active Directory integration
+│   ├── lidMapping.js     # LID mapping functionality
+│   ├── messageProcessor.js # Message processing and media handling
+│   └── n8nIntegration.js # n8n webhook integration
+└── auth_info_baileys/    # WhatsApp session data (auto-generated)
 ```
 
 ## Configuration
 
-- **Port**: 8192 (configurable in server.js)
+### Environment Variables
+Create a `.env` file with the following variables:
+
+```env
+# Server Configuration
+PORT=8192
+ADMIN_NUMBER=6285712612218
+
+# LDAP Configuration
+LDAP_URL=ldap://192.168.1.100:389
+LDAP_BIND_DN=CN=ldapuser,CN=Users,DC=merdekabattery,DC=local
+LDAP_BIND_PASSWORD=your_ldap_password
+LDAP_SEARCH_BASE=DC=merdekabattery,DC=local
+LDAP_SEARCH_FILTER=(sAMAccountName={username})
+
+# n8n Webhook Configuration
+N8N_WEBHOOK_URL=https://n8nprod.merdekabattery.com:5679/webhook/whatsapptest
+N8N_WEBHOOK_URL_LOG=https://n8nprod.merdekabattery.com:5679/webhook/whatsapplog
+```
+
+### Core Settings
+- **Port**: 8192 (configurable via PORT environment variable)
 - **Authentication**: Session data stored in `auth_info_baileys/` folder
-- **Logging**: Pino logger with silent level for production
+- **Logging**: Pino logger with configurable levels
+- **LDAP**: Enterprise directory integration for user authentication
+- **n8n**: Webhook endpoints for workflow automation
 
 ## Security Notes
 
@@ -206,19 +263,58 @@ whatsapp-ai/
 
 ## Troubleshooting
 
+### Common Issues
 1. **QR Code not appearing**: Check browser console for Socket.IO connection errors
 2. **Connection issues**: Ensure WhatsApp Web is not open in another browser
-3. **Port conflicts**: Change the PORT variable in server.js if 8192 is in use
+3. **Port conflicts**: Change the PORT environment variable if 8192 is in use
 4. **Authentication errors**: Delete the `auth_info_baileys/` folder and restart
+
+### Enterprise Integration Issues
+5. **LDAP Connection Failed**: Verify LDAP_URL, credentials, and network connectivity
+6. **n8n Webhook Errors**: Check webhook URLs and n8n workflow registration
+7. **Media Download Issues**: Ensure sufficient disk space and network bandwidth
+8. **Docker Issues**: Check container logs and environment variable configuration
+
+### Debug Mode
+Enable detailed logging by setting environment variables:
+```env
+LOG_LEVEL=debug
+DEBUG_LDAP=true
+DEBUG_WEBHOOKS=true
+```
 
 ## Dependencies
 
+### Core Dependencies
 - `@whiskeysockets/baileys` - WhatsApp Web API
 - `express` - Web server framework
 - `socket.io` - Real-time communication
 - `qrcode` - QR code generation
 - `cors` - Cross-origin resource sharing
 - `pino` - Logging library
+
+### Enterprise Features
+- `ldapjs` - LDAP/Active Directory integration
+- `axios` - HTTP client for webhook requests
+- `dotenv` - Environment variable management
+
+### Media Support
+- Enhanced media download and processing
+- Base64 encoding for webhook transmission
+- Support for images, videos, audio, documents, stickers
+
+## Docker Deployment
+
+### Using Docker Compose
+```bash
+docker-compose up -d
+```
+
+### Manual Docker Build
+```bash
+docker build -t whatsapp-api .
+docker run -p 8192:8192 --env-file .env whatsapp-api
+```
 
 ## License
 
