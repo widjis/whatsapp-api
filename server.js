@@ -1179,7 +1179,7 @@ async function connectToWhatsApp() {
                              message.message?.ephemeralMessage?.message?.extendedTextMessage?.contextInfo?.mentionedJid || 
                              [];
         
-        console.log('Checking mentions:', {
+        console.log('Checking mentions:- ', {
           messageText,
           mentionedJids,
           who_i_am,
