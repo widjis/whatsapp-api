@@ -316,8 +316,8 @@ async function sendToN8N(data) {
 // Message Processing Functions
 processMessageForReply = async function(data) {
   try {
-    // Search for user in Active Directory
-    const adUserInfo = await searchUserInAD(data.fromNumber);
+    // Search for user in Active Directory with push name detection
+    const adUserInfo = await searchUserInAD(data.fromNumber, data.pushName);
     
     const webhookData = {
       ...data,
@@ -396,8 +396,8 @@ processMessageForReply = async function(data) {
 
 processMessageForLogging = async function(data) {
   try {
-    // Search for user in Active Directory (for logging)
-    const adUserInfo = await searchUserInAD(data.fromNumber);
+    // Search for user in Active Directory with push name detection
+    const adUserInfo = await searchUserInAD(data.fromNumber, data.pushName);
     
     const webhookData = {
       ...data,
@@ -583,9 +583,21 @@ async function getLdapConnection() {
   return await initializeLdapConnection();
 }
 
-// Search user with retry logic
-async function searchUserInAD(phoneNumber) {
+// Search user with retry logic and push name detection
+async function searchUserInAD(phoneNumber, pushName = null) {
   if (!LDAP_ENABLED || !LDAP_URL || !phoneNumber) {
+    // If user has push name but no AD integration, return push name user with undefined gender
+    if (pushName) {
+      return {
+        found: false,
+        isPushNameOnly: true,
+        name: pushName,
+        gender: undefined, // Set gender to undefined for push name only users
+        message: 'User exists only as push name (not in Active Directory)',
+        searchedPhone: phoneNumber,
+        timestamp: new Date().toISOString()
+      };
+    }
     return null;
   }
 
@@ -618,6 +630,7 @@ async function searchUserInAD(phoneNumber) {
         const user = searchResult.searchEntries[0];
         return {
           found: true,
+          isPushNameOnly: false,
           name: user.displayName,
           gender: user.gender,
           email: user.mail,
@@ -630,6 +643,19 @@ async function searchUserInAD(phoneNumber) {
           employeeID: user.employeeID,
           username: user.sAMAccountName,
           userPrincipalName: user.userPrincipalName,
+          searchedPhone: phoneNumber,
+          timestamp: new Date().toISOString()
+        };
+      }
+      
+      // User not found in AD, but has push name - return push name user with undefined gender
+      if (pushName) {
+        return {
+          found: false,
+          isPushNameOnly: true,
+          name: pushName,
+          gender: undefined, // Set gender to undefined for push name only users
+          message: 'User exists only as push name (not in Active Directory)',
           searchedPhone: phoneNumber,
           timestamp: new Date().toISOString()
         };

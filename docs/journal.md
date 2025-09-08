@@ -3013,6 +3013,72 @@ The bot was extracting "Media message received" instead of the actual text "@628
 
 ---
 
+## 2025-09-08 11:15:35 - Enhanced Push Name Detection with Gender Handling
+
+### Context
+User requested that when a phone number is from push name (meaning it doesn't exist in Active Directory), the gender should be set to undefined to properly distinguish between AD users and push name only users.
+
+### Problem Analysis
+- Previous logic didn't differentiate between users found in AD vs users with only push names
+- Gender field was not being handled appropriately for push name only users
+- Need to detect when a user exists only as a WhatsApp push name without AD record
+
+### Solution Implemented
+1. **Enhanced searchUserInAD Function**: Modified to accept pushName parameter and detect push name only users
+2. **Gender Handling**: Set gender to `undefined` for users who only exist as push names
+3. **Push Name Detection**: Added `isPushNameOnly` flag to distinguish user types
+4. **Updated Message Processing**: Modified both reply and logging functions to pass push name data
+
+### Code Changes
+```javascript
+// Enhanced searchUserInAD function with push name detection
+async function searchUserInAD(phoneNumber, pushName = null) {
+  // If user has push name but no AD integration, return push name user with undefined gender
+  if (pushName && (!LDAP_ENABLED || !LDAP_URL)) {
+    return {
+      found: false,
+      isPushNameOnly: true,
+      name: pushName,
+      gender: undefined, // Set gender to undefined for push name only users
+      message: 'User exists only as push name (not in Active Directory)',
+      searchedPhone: phoneNumber,
+      timestamp: new Date().toISOString()
+    };
+  }
+  
+  // User not found in AD, but has push name - return push name user with undefined gender
+  if (pushName && !foundInAD) {
+    return {
+      found: false,
+      isPushNameOnly: true,
+      name: pushName,
+      gender: undefined, // Set gender to undefined for push name only users
+      message: 'User exists only as push name (not in Active Directory)',
+      searchedPhone: phoneNumber,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Updated message processing functions
+const adUserInfo = await searchUserInAD(data.fromNumber, data.pushName);
+```
+
+### Technical Benefits
+- **Clear User Type Distinction**: Differentiates between AD users and push name only users
+- **Proper Gender Handling**: Sets gender to undefined for non-AD users as requested
+- **Enhanced Data Structure**: Added `isPushNameOnly` flag for better data classification
+- **Backward Compatibility**: Maintains existing functionality for AD users
+- **Improved Logic**: Better handling of edge cases where users exist only in WhatsApp
+
+### Files Modified
+- <mcfile name="server.js" path="server.js"></mcfile> - Enhanced searchUserInAD function and message processing
+- <mcfile name="docs/journal.md" path="docs/journal.md"></mcfile> - This documentation entry
+
+**Status**: ✅ **RESOLVED** - Push name users now have gender set to undefined, properly distinguishing them from Active Directory users.
+
+---
+
 ## 2025-09-07 13:32:38
 
 ### Context
