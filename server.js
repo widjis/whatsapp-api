@@ -8,6 +8,8 @@ const path = require('path');
 const P = require('pino');
 const { Client } = require('ldapts');
 const LIDMappingManager = require('./lib/lidMapping');
+const multer = require('multer');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
@@ -791,6 +793,32 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
+// Multer configuration for file uploads
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept images, videos, audio, and documents
+    const allowedMimes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'video/mp4', 'video/avi', 'video/mov', 'video/wmv', 'video/webm',
+      'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/m4a', 'audio/aac',
+      'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'text/plain'
+    ];
+    
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Unsupported file type: ${file.mimetype}`), false);
+    }
+  }
+});
+
 // Serve the HTML file
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
@@ -802,27 +830,98 @@ app.get('/api/status', (req, res) => {
   res.json({ status, qr: qrDinamic });
 });
 
-app.post('/api/send-message', async (req, res) => {
+app.post('/api/send-message', upload.single('media'), async (req, res) => {
   try {
     const { number, message } = req.body;
+    const mediaFile = req.file;
     
     if (!sock) {
       return res.status(400).json({ error: 'WhatsApp not connected' });
     }
     
-    if (!number || !message) {
-      return res.status(400).json({ error: 'Number and message are required' });
+    if (!number) {
+      return res.status(400).json({ error: 'Number is required' });
+    }
+    
+    // Require either message text or media file
+    if (!message && !mediaFile) {
+      return res.status(400).json({ error: 'Either message text or media file is required' });
     }
     
     const formattedNumber = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
     
-    await sock.sendMessage(formattedNumber, { text: message });
-    res.json({ success: true, message: 'Message sent successfully' });
+    let messageContent = {};
+    
+    // Handle media file if provided
+    if (mediaFile) {
+      const mediaType = getMediaTypeFromMime(mediaFile.mimetype);
+      
+      switch (mediaType) {
+        case 'image':
+          messageContent = {
+            image: mediaFile.buffer,
+            caption: message || '',
+            mimetype: mediaFile.mimetype
+          };
+          break;
+          
+        case 'video':
+          messageContent = {
+            video: mediaFile.buffer,
+            caption: message || '',
+            mimetype: mediaFile.mimetype
+          };
+          break;
+          
+        case 'audio':
+          messageContent = {
+            audio: mediaFile.buffer,
+            mimetype: mediaFile.mimetype,
+            ptt: false // Set to true for voice messages
+          };
+          break;
+          
+        case 'document':
+        default:
+          messageContent = {
+            document: mediaFile.buffer,
+            mimetype: mediaFile.mimetype,
+            fileName: mediaFile.originalname || 'document'
+          };
+          if (message) {
+            messageContent.caption = message;
+          }
+          break;
+      }
+    } else {
+      // Text-only message
+      messageContent = { text: message };
+    }
+    
+    await sock.sendMessage(formattedNumber, messageContent);
+    
+    const responseMessage = mediaFile 
+      ? `${getMediaTypeFromMime(mediaFile.mimetype)} sent successfully${message ? ' with caption' : ''}` 
+      : 'Message sent successfully';
+      
+    res.json({ 
+      success: true, 
+      message: responseMessage,
+      mediaType: mediaFile ? getMediaTypeFromMime(mediaFile.mimetype) : 'text'
+    });
   } catch (error) {
     console.error('Error sending message:', error);
     res.status(500).json({ error: 'Failed to send message' });
   }
 });
+
+// Helper function to determine media type from MIME type
+function getMediaTypeFromMime(mimetype) {
+  if (mimetype.startsWith('image/')) return 'image';
+  if (mimetype.startsWith('video/')) return 'video';
+  if (mimetype.startsWith('audio/')) return 'audio';
+  return 'document';
+}
 
 app.post('/api/send-groupmessage', async (req, res) => {
   try {
