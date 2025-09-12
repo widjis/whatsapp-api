@@ -179,6 +179,40 @@ Due to WhatsApp's updated privacy policy, user numbers in groups are now represe
 6285712612218.30@s.whatsapp.net
 ```
 
+## AI Authorization System
+
+The API includes a secure AI authorization system that restricts AI responses to authorized users only.
+
+### Features:
+- **Phone Number Authorization**: Only specified phone numbers can trigger AI responses
+- **Activation Command**: Requires "hai ai" prefix for AI activation (case-insensitive)
+- **Security Logging**: Logs unauthorized AI attempts for security monitoring
+- **Flexible Command Format**: Supports "hai ai, [instruction]" or "hai ai [instruction]"
+
+### Usage Examples:
+```
+// Valid AI commands (case-insensitive)
+"hai ai, what's the weather today?"
+"HAI AI tell me a joke"
+"Hai Ai, help me with this task"
+
+// Invalid commands (will be ignored)
+"hello ai, help me"  // Wrong activation command
+"what's the weather?"  // No activation command
+```
+
+### Configuration:
+1. Set `USER_NUMBER` in your `.env` file (your personal number - always authorized)
+2. Optionally set `AUTHORIZED_AI_NUMBERS` for additional authorized numbers (comma-separated)
+3. Only messages from authorized numbers with "hai ai" prefix will trigger AI responses
+4. Unauthorized attempts are logged but ignored
+
+### Environment Variables:
+```env
+USER_NUMBER=1234567890  # Your personal phone number
+AUTHORIZED_AI_NUMBERS=0987654321,1122334455  # Additional authorized numbers (optional)
+```
+
 ### Advanced LID Mapping System:
 
 #### 1. **Mapping Database**
@@ -245,6 +279,10 @@ LDAP_SEARCH_FILTER=(sAMAccountName={username})
 # n8n Webhook Configuration
 N8N_WEBHOOK_URL=https://n8nprod.merdekabattery.com:5679/webhook/whatsapptest
 N8N_WEBHOOK_URL_LOG=https://n8nprod.merdekabattery.com:5679/webhook/whatsapplog
+
+# AI Authorization Configuration
+USER_NUMBER=1234567890  # Your personal phone number (always authorized for AI)
+AUTHORIZED_AI_NUMBERS=0987654321,1122334455  # Additional authorized phone numbers for AI (comma-separated, optional)
 ```
 
 ### Core Settings

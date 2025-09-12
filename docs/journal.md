@@ -3570,3 +3570,322 @@ The issue occurs because:
 - <mcfile name="Dockerfile" path="C:\Scripts\Projects\whatsapp-ai\Dockerfile"></mcfile> - Added runtime permission fix and su-exec
 
 **Status:** ✅ **DOCKER PERMISSION FIX IMPLEMENTED** - Ready for testing once Docker Desktop is installed.
+
+---
+
+## 2025-09-09 20:08:48 - AI Authorization System Implementation
+
+### Context
+Implemented a secure AI authorization system to restrict AI responses to authorized phone numbers only, with a specific activation command format for enhanced security.
+
+### Problem Analysis
+The system needed:
+1. Phone number-based authorization to prevent unauthorized AI usage
+2. Activation command requirement ("hai ai") for explicit AI engagement
+3. Security logging for unauthorized attempts
+4. Case-insensitive command detection for user convenience
+5. Flexible command parsing for natural language interaction
+
+### Solution Implementation
+
+#### 1. **Environment Configuration**
+Added new environment variables:
+```javascript
+// AI Authorization Configuration
+const AUTHORIZED_AI_NUMBER = process.env.AUTHORIZED_AI_NUMBER; // Your authorized phone number
+const AI_ACTIVATION_COMMAND = 'hai ai'; // Case-insensitive activation command
+```
+
+#### 2. **Authorization Logic in processMessageForReply**
+Implemented comprehensive authorization checks:
+- **Phone Number Verification**: Compares cleaned phone numbers (removes +, spaces, dashes)
+- **Activation Command Detection**: Case-insensitive "hai ai" prefix requirement
+- **Instruction Extraction**: Parses command to extract AI instruction after activation phrase
+- **Security Logging**: Logs unauthorized attempts without processing
+- **Early Return**: Exits function immediately for unauthorized requests
+
+#### 3. **Command Format Support**
+Supports flexible command formats:
+- "hai ai, [instruction]" (with comma)
+- "hai ai [instruction]" (with space)
+- Case-insensitive detection
+
+#### 4. **Security Features**
+- **Authorization Check**: Only configured phone number can trigger AI
+- **Command Validation**: Requires specific activation phrase
+- **Attempt Logging**: Records unauthorized AI usage attempts
+- **Silent Rejection**: No response to unauthorized requests
+
+### Technical Benefits
+- **Enhanced Security**: Prevents unauthorized AI access
+- **Explicit Activation**: Requires intentional AI engagement
+- **Audit Trail**: Logs all AI interaction attempts
+- **User-Friendly**: Case-insensitive and flexible command format
+- **Zero Configuration**: Works with existing message processing flow
+
+### API Usage Examples
+
+**Valid AI Commands:**
+```
+"hai ai, what's the weather today?"
+"HAI AI tell me a joke"
+"Hai Ai, help me with this task"
+```
+
+**Invalid Commands (Ignored):**
+```
+"hello ai, help me"  // Wrong activation command
+"what's the weather?"  // No activation command
+```
+
+### Configuration Setup
+```env
+# Add to .env file
+AUTHORIZED_AI_NUMBER=1234567890  # Your authorized phone number
+```
+
+### Files Modified
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> - Added AI authorization logic and environment variables
+- <mcfile name="README.md" path="C:\Scripts\Projects\whatsapp-ai\README.md"></mcfile> - Added AI Authorization System documentation
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile> - This documentation entry
+
+### Security Considerations
+- Phone number must be configured in environment variables
+- Unauthorized attempts are logged for security monitoring
+- No response given to unauthorized requests (silent rejection)
+- Case-insensitive command detection for user convenience
+
+**Status:** ✅ **AI AUTHORIZATION SYSTEM IMPLEMENTED** - Secure AI access control with phone number verification and activation command requirement.
+
+---
+
+## 2025-09-09 20:23:55 - AI Authorization System Fix (Final) - Zero Config for User
+
+### Context
+User reported that they shouldn't need environment configuration for their own WhatsApp number - the AI should respond to their messages with 'hai ai' automatically, and environment variables should only be needed for additional phone numbers.
+
+### Problem Identified
+The previous implementation still had usability issues:
+- Required environment configuration even for the user's own messages
+- User had to set `USER_NUMBER` env variable for their own WhatsApp to work
+- This was counterintuitive - users expect their own WhatsApp to respond without setup
+- Environment variables should only be needed for additional authorized numbers
+
+### Final Solution Implementation
+
+#### 1. **User-First Authorization Logic**
+Completely restructured authorization to prioritize user messages:
+```javascript
+processMessageForReply = async function(data) {
+  // Check activation command first
+  const messageText = data.message || '';
+  const activationCommand = AI_ACTIVATION_COMMAND.toLowerCase();
+  
+  if (!messageText.toLowerCase().startsWith(activationCommand)) {
+    return; // No activation command
+  }
+  
+  // Always allow messages from user (fromMe: true) with activation command
+  if (data.fromMe) {
+    isAuthorized = true;
+    console.log(`✅ AI request from user (fromMe): ${data.fromNumber}`);
+  } else {
+    // For messages from others, check environment configuration
+    if (!USER_NUMBER && AUTHORIZED_AI_NUMBERS.length === 0) {
+      console.log('⚠️ Only user messages (fromMe) are allowed.');
+      return;
+    }
+    // ... check env config for other numbers
+  }
+```
+
+#### 2. **Enhanced Message Data**
+Added `fromMe` property to message data for proper authorization:
+```javascript
+const messageData = {
+  // ... other properties
+  fromMe: isFromUser // Add fromMe property to indicate if message is from user
+};
+```
+
+#### 3. **Improved Message Filter**
+Updated message filtering to handle user messages with activation:
+```javascript
+// Allow user messages with 'hai ai' activation OR regular messages from others
+const isFromUser = message.key.fromMe;
+const shouldProcessFromUser = isFromUser && extractedText.toLowerCase().startsWith('hai ai');
+
+if ((!isFromUser && m.type === 'notify') || shouldProcessFromUser) {
+  // Process message...
+}
+```
+
+### Technical Benefits
+- **Zero Configuration**: User messages work immediately without any env setup
+- **Intuitive UX**: User's own WhatsApp responds to 'hai ai' out of the box
+- **Secure**: Still requires explicit activation command ('hai ai')
+- **Flexible**: Environment variables only needed for additional authorized numbers
+- **Clear Logging**: Detailed authorization logs for debugging
+
+### Configuration Examples
+
+**Default Setup (User Only) - No Config Needed**
+```bash
+# No environment variables needed!
+# Just send "hai ai, your message" from your WhatsApp
+# The AI will respond automatically
+```
+
+**Extended Setup (User + Additional Numbers)**
+```env
+# .env file - only needed for additional authorized numbers
+USER_NUMBER=+1234567890          # Optional: for explicit user number logging
+AUTHORIZED_AI_NUMBERS=+0987654321,+1122334455  # Additional authorized numbers
+```
+
+### Files Modified
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> - Updated message filtering logic (lines 1282-1287), added `fromMe` property to messageData (line 1648), restructured authorization logic to prioritize user messages (lines 324-379), removed duplicate activation command check
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile> - Updated implementation documentation
+
+### Usage Examples
+
+**User Messages (Always Work - No Config)**
+```
+"hai ai, what's the weather?" ✅ Processed automatically
+"hai ai, help me with this code" ✅ Processed automatically
+"HAI AI, send email to team" ✅ Processed automatically (case-insensitive)
+"hello world" ❌ Ignored (no activation command)
+```
+
+**Additional Authorized Numbers (Require Env Config)**
+```bash
+# From +0987654321 (if configured in AUTHORIZED_AI_NUMBERS)
+"hai ai, generate report" ✅ Processed (if configured)
+"hai ai, help" ❌ Ignored (if not configured)
+```
+
+**Unauthorized Numbers**
+```bash
+# From any unconfigured number
+"hai ai, hack something" ❌ Logged and ignored
+```
+
+### Key Changes Made
+1. **Message Filter**: Updated to allow user messages with 'hai ai' activation
+2. **Authorization Logic**: Restructured to always allow user messages (fromMe: true)
+3. **Message Data**: Added `fromMe` property for proper authorization checks
+4. **Environment Variables**: Now completely optional for user's own number
+5. **Code Cleanup**: Removed duplicate activation command checks
+
+**Status:** ✅ **AI AUTHORIZATION SYSTEM COMPLETED** - Zero configuration needed for user's own number, environment variables only required for additional authorized numbers.
+
+---
+
+## 2025-09-09 20:29:02 - Fixed Persistent Typing Indicator Issue
+
+### Context
+Resolved a critical issue where typing indicators would persist after AI responses were sent, causing unnecessary "typing..." status to remain visible to users even after receiving the actual reply message.
+
+### Problem Identified
+The typing indicator system had several flaws in error handling and cleanup:
+1. **Incomplete Error Handling**: When presence updates failed, typing indicators weren't properly cleared
+2. **Missing Finally Blocks**: No guaranteed cleanup in all execution paths
+3. **Inconsistent State Management**: No tracking of whether typing indicator was actually set
+
+### Root Cause Analysis
+- In n8n response handler: If `sendPresenceUpdate('composing')` succeeded but later operations failed, the typing indicator remained active
+- In default reply handler: Similar issue with incomplete cleanup on errors
+- No systematic approach to ensure typing indicators are always cleared
+
+### Solution Implemented
+
+#### 1. **Robust Typing Indicator Management**
+Implemented flag-based tracking and guaranteed cleanup:
+```javascript
+// Track if typing indicator was actually set
+let typingIndicatorSet = false;
+
+try {
+  if (TYPING_ENABLED) {
+    try {
+      await sock.sendPresenceUpdate('composing', recipient);
+      typingIndicatorSet = true; // Only set flag if successful
+    } catch (presenceError) {
+      console.error('Error setting typing indicator:', presenceError.message);
+    }
+  }
+  
+  // Send message...
+  
+} finally {
+  // Always try to clear if it was set
+  if (TYPING_ENABLED && typingIndicatorSet) {
+    try {
+      await sock.sendPresenceUpdate('available', recipient);
+    } catch (clearError) {
+      console.error('Failed to clear typing indicator:', clearError.message);
+    }
+  }
+}
+```
+
+#### 2. **Enhanced Error Handling**
+- **State Tracking**: Only attempt to clear typing indicators that were actually set
+- **Finally Blocks**: Guaranteed cleanup regardless of success/failure
+- **Separate Error Handling**: Isolated error handling for setting vs clearing indicators
+- **Detailed Logging**: Clear indication of typing indicator operations
+
+#### 3. **Improved Code Structure**
+- **Consistent Pattern**: Same approach used in both n8n and default reply handlers
+- **Fail-Safe Design**: System continues working even if presence updates fail
+- **Clean Separation**: Message sending logic separated from presence management
+
+### Technical Benefits
+- **No Persistent Indicators**: Typing status always cleared after message sending
+- **Robust Error Handling**: System handles WhatsApp API failures gracefully
+- **Better User Experience**: No confusing persistent "typing..." status
+- **Reliable State Management**: Consistent typing indicator behavior
+- **Enhanced Debugging**: Clear logging for troubleshooting presence issues
+
+### Files Modified
+1. **<mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile>**:
+   - Updated n8n response handler with flag-based typing management
+   - Enhanced sendDefaultReply function with guaranteed cleanup
+   - Added proper finally blocks for typing indicator cleanup
+   - Improved error handling and logging for presence updates
+
+2. **<mcfile name="journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile>**: This documentation entry
+
+### Before vs After
+
+#### Before (Problematic)
+```javascript
+// Could leave typing indicator active on errors
+try {
+  await sock.sendPresenceUpdate('composing', recipient);
+  await sock.sendMessage(recipient, { text: reply });
+  await sock.sendPresenceUpdate('available', recipient);
+} catch (error) {
+  // If error occurred after 'composing', indicator stays active
+  await sock.sendMessage(recipient, { text: reply });
+}
+```
+
+#### After (Fixed)
+```javascript
+// Guaranteed cleanup with state tracking
+let typingIndicatorSet = false;
+try {
+  if (TYPING_ENABLED) {
+    await sock.sendPresenceUpdate('composing', recipient);
+    typingIndicatorSet = true;
+  }
+  await sock.sendMessage(recipient, { text: reply });
+} finally {
+  if (TYPING_ENABLED && typingIndicatorSet) {
+    await sock.sendPresenceUpdate('available', recipient);
+  }
+}
+```
+
+**Status:** ✅ **TYPING INDICATOR ISSUE FIXED** - All typing indicators properly cleared after message sending, robust error handling prevents persistent typing status, enhanced user experience with reliable presence management.

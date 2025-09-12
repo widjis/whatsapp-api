@@ -65,6 +65,11 @@ const TYPING_ENABLED = process.env.TYPING_ENABLED === 'true';
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT = parseInt(process.env.MESSAGE_BUFFER_TIMEOUT) || 3000;
 
+// AI Authorization Configuration
+const USER_NUMBER = process.env.USER_NUMBER; // Your personal phone number (always authorized)
+const AUTHORIZED_AI_NUMBERS = process.env.AUTHORIZED_AI_NUMBERS ? process.env.AUTHORIZED_AI_NUMBERS.split(',').map(num => num.trim()) : []; // Additional authorized numbers (comma-separated)
+const AI_ACTIVATION_COMMAND = 'hai ai'; // Case-insensitive activation command
+
 // Message Buffer Storage
 const messageBuffers = new Map(); // phoneNumber -> { messages: [], timer: timeoutId, lastMessageTime: timestamp }
 
@@ -318,6 +323,76 @@ async function sendToN8N(data) {
 // Message Processing Functions
 processMessageForReply = async function(data) {
   try {
+    // Check if message starts with AI activation command (case-insensitive)
+    const messageText = data.message || '';
+    const activationCommand = AI_ACTIVATION_COMMAND.toLowerCase();
+    
+    if (!messageText.toLowerCase().startsWith(activationCommand)) {
+      console.log(`🚫 Message does not start with activation command '${AI_ACTIVATION_COMMAND}': ${messageText}`);
+      return; // Do nothing if message doesn't start with activation command
+    }
+    
+    // AI Authorization Check
+    let isAuthorized = false;
+    
+    // Always allow messages from user (fromMe: true) with activation command
+    if (data.fromMe) {
+      isAuthorized = true;
+      console.log(`✅ AI request from user (fromMe): ${data.fromNumber}`);
+    } else {
+      // For messages from others, check environment configuration
+      if (!USER_NUMBER && AUTHORIZED_AI_NUMBERS.length === 0) {
+        console.log('⚠️ USER_NUMBER and AUTHORIZED_AI_NUMBERS not configured. Only user messages (fromMe) are allowed.');
+        return;
+      }
+      
+      // Clean phone numbers for comparison (remove + and spaces)
+      const cleanFromNumber = data.fromNumber.replace(/[+\s-]/g, '');
+      
+      // Check user's number first
+      if (USER_NUMBER) {
+        const cleanUserNumber = USER_NUMBER.replace(/[+\s-]/g, '');
+        if (cleanFromNumber === cleanUserNumber) {
+          isAuthorized = true;
+          console.log(`✅ AI request from configured user number: ${data.fromNumber}`);
+        }
+      }
+      
+      // Check additional authorized numbers
+      if (!isAuthorized && AUTHORIZED_AI_NUMBERS.length > 0) {
+        for (const authorizedNumber of AUTHORIZED_AI_NUMBERS) {
+          const cleanAuthorizedNumber = authorizedNumber.replace(/[+\s-]/g, '');
+          if (cleanFromNumber === cleanAuthorizedNumber) {
+            isAuthorized = true;
+            console.log(`✅ AI request from authorized number: ${data.fromNumber}`);
+            break;
+          }
+        }
+      }
+      
+      if (!isAuthorized) {
+        const authorizedList = [USER_NUMBER, ...AUTHORIZED_AI_NUMBERS].filter(Boolean).join(', ');
+        console.log(`🚫 Unauthorized AI request from: ${data.fromNumber} (authorized: ${authorizedList})`);
+        console.log(`📝 Logging unauthorized AI attempt: ${data.message}`);
+        return; // Do nothing for unauthorized numbers
+      }
+    }
+    
+    // Extract instruction after "hai ai, "
+    const instruction = messageText.substring(activationCommand.length).trim();
+    if (instruction.startsWith(',')) {
+      // Remove leading comma and trim
+      data.message = instruction.substring(1).trim();
+    } else if (instruction.startsWith(' ')) {
+      // Remove leading space and trim
+      data.message = instruction.trim();
+    } else {
+      data.message = instruction;
+    }
+    
+    console.log(`✅ Authorized AI request from: ${data.fromNumber}`);
+    console.log(`🤖 AI Instruction: ${data.message}`);
+    
     // COMMENTED OUT: Search for user in Active Directory
     // const adUserInfo = await searchUserInAD(data.fromNumber);
     
@@ -371,32 +446,39 @@ processMessageForReply = async function(data) {
        }
       
       if (replyText) {
-        // Show typing indicator before sending reply (if enabled)
-        if (TYPING_ENABLED) {
-          try {
-            await sock.sendPresenceUpdate('composing', data.replyTo);
-            console.log('Showing typing indicator to:', data.isGroup ? 'group' : data.fromNumber);
-            
-            // Wait a moment to simulate natural typing
-            await new Promise(resolve => setTimeout(resolve, 1500));
-            
-            // Send the actual reply
-            await sock.sendMessage(data.replyTo, { text: replyText });
-            
-            // Mark as available after sending
-            await sock.sendPresenceUpdate('available', data.replyTo);
-            
-            console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber);
-          } catch (presenceError) {
-            console.error('Error with presence update:', presenceError.message);
-            // Still send the message even if presence update fails
-            await sock.sendMessage(data.replyTo, { text: replyText });
-            console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber, '(without typing indicator)');
+        let typingIndicatorSet = false;
+        
+        try {
+          // Show typing indicator before sending reply (if enabled)
+          if (TYPING_ENABLED) {
+            try {
+              await sock.sendPresenceUpdate('composing', data.replyTo);
+              typingIndicatorSet = true;
+              console.log('Showing typing indicator to:', data.isGroup ? 'group' : data.fromNumber);
+              
+              // Wait a moment to simulate natural typing
+              await new Promise(resolve => setTimeout(resolve, 1500));
+            } catch (presenceError) {
+              console.error('Error setting typing indicator:', presenceError.message);
+            }
           }
-        } else {
-          // Send reply directly without typing indicator
+          
+          // Send the actual reply
           await sock.sendMessage(data.replyTo, { text: replyText });
-          console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber, '(typing disabled)');
+          console.log('Sent n8n response to:', data.isGroup ? 'group' : data.fromNumber);
+          
+        } catch (messageError) {
+          console.error('Error sending message:', messageError.message);
+        } finally {
+          // Always try to clear typing indicator if it was set
+          if (TYPING_ENABLED && typingIndicatorSet) {
+            try {
+              await sock.sendPresenceUpdate('available', data.replyTo);
+              console.log('Cleared typing indicator after n8n response');
+            } catch (clearError) {
+              console.error('Failed to clear typing indicator:', clearError.message);
+            }
+          }
         }
       } else {
         console.log('No valid response text found in n8n result:', n8nResult.result);
@@ -455,11 +537,14 @@ processMessageForLogging = async function(data) {
 };
 
 sendDefaultReply = async function(recipient, isGroupMessage) {
+  let typingIndicatorSet = false;
+  
   try {
     // Show typing indicator before sending default reply (if enabled)
     if (TYPING_ENABLED) {
       try {
         await sock.sendPresenceUpdate('composing', recipient);
+        typingIndicatorSet = true;
         console.log('Showing typing indicator for default reply to:', recipient);
         
         // Wait a moment to simulate natural typing
@@ -481,16 +566,18 @@ sendDefaultReply = async function(recipient, isGroupMessage) {
       console.log('Sent default direct reply to:', recipient, TYPING_ENABLED ? '' : '(typing disabled)');
     }
     
-    // Mark as available after sending (if typing was enabled)
-    if (TYPING_ENABLED) {
-      try {
-        await sock.sendPresenceUpdate('available', recipient);
-      } catch (presenceError) {
-        console.error('Error setting available status after default reply:', presenceError.message);
-      }
-    }
   } catch (error) {
     console.error('Error sending default reply:', error);
+  } finally {
+    // Always try to clear typing indicator if it was set
+    if (TYPING_ENABLED && typingIndicatorSet) {
+      try {
+        await sock.sendPresenceUpdate('available', recipient);
+        console.log('Cleared typing indicator for default reply');
+      } catch (presenceError) {
+        console.error('Error clearing typing indicator after default reply:', presenceError.message);
+      }
+    }
   }
 };
 
@@ -1212,7 +1299,16 @@ async function connectToWhatsApp() {
   
   sock.ev.on('messages.upsert', async (m) => {
     const message = m.messages[0];
-    if (!message.key.fromMe && m.type === 'notify') {
+    
+    // Check if this is a message from user with AI activation command
+    const isFromUser = message.key.fromMe;
+    console.log('isFromUser: ', isFromUser);
+    const shouldProcessFromUser = isFromUser && message.message && 
+      (message.message.conversation || message.message.extendedTextMessage?.text || '') 
+      .toLowerCase().startsWith('hai ai');
+    
+    // Process message if: (not from user AND notify type) OR (from user with AI command)
+    if ((!isFromUser && m.type === 'notify') || shouldProcessFromUser) {
       // Ignore status broadcast messages
       if (message.key.remoteJid === 'status@broadcast') {
         console.log('Ignoring status broadcast message');
@@ -1566,7 +1662,8 @@ async function connectToWhatsApp() {
         mentionedJids: message.message?.extendedTextMessage?.contextInfo?.mentionedJid || [],
         botNumber: who_i_am,
         botLid: who_i_am_lid,
-        shouldReply: shouldReply
+        shouldReply: shouldReply,
+        fromMe: isFromUser // Add fromMe property to indicate if message is from user
       };
 
       // Process contact information with LID mapping manager
