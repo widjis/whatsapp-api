@@ -319,6 +319,12 @@ processMessageForReply = async function(data) {
     // Search for user in Active Directory with push name detection
     const adUserInfo = await searchUserInAD(data.fromNumber, data.pushName);
     
+    // Check if message should be skipped (LDAP failed without push name fallback)
+    if (adUserInfo && adUserInfo.shouldSkipN8n) {
+      console.log('Skipping n8n webhook due to LDAP failure without push name fallback');
+      return { success: false, reason: 'ldap_failed_no_pushname' };
+    }
+    
     const webhookData = {
       ...data,
       adUser: adUserInfo // Add Active Directory user information
@@ -398,6 +404,12 @@ processMessageForLogging = async function(data) {
   try {
     // Search for user in Active Directory with push name detection
     const adUserInfo = await searchUserInAD(data.fromNumber, data.pushName);
+    
+    // Check if message should be skipped (LDAP failed without push name fallback)
+    if (adUserInfo && adUserInfo.shouldSkipN8n) {
+      console.log('Skipping n8n webhook logging due to LDAP failure without push name fallback');
+      return;
+    }
     
     const webhookData = {
       ...data,
@@ -684,10 +696,27 @@ async function searchUserInAD(phoneNumber, pushName = null) {
     }
   }
   
+  // All LDAP attempts failed - fallback to push name if available
+  if (pushName) {
+    console.log(`LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name fallback: ${pushName}`);
+    return {
+      found: false,
+      isPushNameOnly: true,
+      name: pushName,
+      gender: undefined,
+      message: `LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name`,
+      error: lastError?.message || 'Unknown LDAP error',
+      searchedPhone: phoneNumber,
+      timestamp: new Date().toISOString()
+    };
+  }
+  
+  // No push name available - return error (this should NOT be sent to n8n)
   return { 
     found: false, 
     error: lastError?.message || 'Unknown LDAP error',
-    message: `Error searching Active Directory after ${LDAP_MAX_RETRIES} attempts`
+    message: `Error searching Active Directory after ${LDAP_MAX_RETRIES} attempts`,
+    shouldSkipN8n: true // Flag to indicate this message should not be sent to n8n
   };
 }
 
@@ -1125,8 +1154,18 @@ async function connectToWhatsApp() {
         attachments.push(attachment);
         mediaInfo = attachment; // Keep backward compatibility
         messageText = attachment.caption || 'Image message received';
+      } else if (message.message?.ephemeralMessage?.message?.imageMessage) {
+        const attachment = await processMediaAttachment(message, 'image', message.message.ephemeralMessage.message.imageMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || 'Image message received';
       } else if (message.message?.videoMessage) {
         const attachment = await processMediaAttachment(message, 'video', message.message.videoMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || 'Video message received';
+      } else if (message.message?.ephemeralMessage?.message?.videoMessage) {
+        const attachment = await processMediaAttachment(message, 'video', message.message.ephemeralMessage.message.videoMessage);
         attachments.push(attachment);
         mediaInfo = attachment; // Keep backward compatibility
         messageText = attachment.caption || 'Video message received';
@@ -1135,8 +1174,18 @@ async function connectToWhatsApp() {
         attachments.push(attachment);
         mediaInfo = attachment; // Keep backward compatibility
         messageText = attachment.ptt ? 'Voice message received' : 'Audio message received';
+      } else if (message.message?.ephemeralMessage?.message?.audioMessage) {
+        const attachment = await processMediaAttachment(message, 'audio', message.message.ephemeralMessage.message.audioMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.ptt ? 'Voice message received' : 'Audio message received';
       } else if (message.message?.documentMessage) {
         const attachment = await processMediaAttachment(message, 'document', message.message.documentMessage);
+        attachments.push(attachment);
+        mediaInfo = attachment; // Keep backward compatibility
+        messageText = attachment.caption || `Document: ${attachment.fileName}`;
+      } else if (message.message?.ephemeralMessage?.message?.documentMessage) {
+        const attachment = await processMediaAttachment(message, 'document', message.message.ephemeralMessage.message.documentMessage);
         attachments.push(attachment);
         mediaInfo = attachment; // Keep backward compatibility
         messageText = attachment.caption || `Document: ${attachment.fileName}`;

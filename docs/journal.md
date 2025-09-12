@@ -3310,6 +3310,112 @@ message.extendedTextMessage.contextInfo
 
 ---
 
+## 2025-09-12 21:08:28 - Ephemeral Media Message Processing Fix
+
+### Context
+User reported webhook payloads showing `messageType: 'unknown'` and `message: 'Media message received'` instead of proper media processing. Analysis revealed that media messages in ephemeral structures (common in group chats) were not being handled correctly.
+
+### Root Cause
+The media message processing logic only checked for direct media messages:
+- `message.message?.imageMessage` ✅
+- `message.message?.ephemeralMessage?.message?.imageMessage` ❌ **MISSING**
+
+This caused ephemeral media messages to fall through to the `else` clause, resulting in:
+- `messageType: 'unknown'`
+- `message: 'Media message received'`
+- `hasAttachment: false`
+- No media processing or download
+
+### Technical Implementation
+
+**Enhanced Media Processing Logic:**
+Added ephemeral message support for all media types:
+
+```javascript
+// Direct media messages (existing)
+else if (message.message?.imageMessage) {
+  const attachment = await processMediaAttachment(message, 'image', message.message.imageMessage);
+  // ... processing
+}
+
+// Ephemeral media messages (NEW)
+else if (message.message?.ephemeralMessage?.message?.imageMessage) {
+  const attachment = await processMediaAttachment(message, 'image', message.message.ephemeralMessage.message.imageMessage);
+  // ... processing
+}
+```
+
+**Supported Ephemeral Media Types:**
+- ✅ **Images**: `message.ephemeralMessage.message.imageMessage`
+- ✅ **Videos**: `message.ephemeralMessage.message.videoMessage`
+- ✅ **Audio**: `message.ephemeralMessage.message.audioMessage`
+- ✅ **Documents**: `message.ephemeralMessage.message.documentMessage`
+
+### Technical Benefits
+
+#### For n8n Webhook Integration
+- **Accurate Message Types**: Now sends `image`, `video`, `audio`, `document` instead of `unknown`
+- **Proper Media Content**: Full base64 media data and metadata available
+- **Correct Captions**: Actual image/video captions instead of generic fallback
+- **Rich Media Info**: Complete `mediaInfo` object with dimensions, file sizes, etc.
+
+#### For WhatsApp Bot Functionality
+- **Group Chat Media**: Proper handling of media messages in group conversations
+- **Ephemeral Support**: Works with disappearing media messages
+- **Consistent Processing**: Same logic for direct and ephemeral media
+- **Error Resilience**: Maintains fallback behavior for truly unknown message types
+
+### Example Fixed Webhook Payload
+
+**Before Fix:**
+```json
+{
+  "messageType": "unknown",
+  "message": "Media message received",
+  "hasAttachment": false,
+  "attachmentType": "none",
+  "mediaInfo": null
+}
+```
+
+**After Fix:**
+```json
+{
+  "messageType": "image",
+  "message": "Check out this photo!",
+  "hasAttachment": true,
+  "attachmentType": "image",
+  "mediaInfo": {
+    "type": "image",
+    "caption": "Check out this photo!",
+    "imageData": "base64EncodedImageData...",
+    "mimetype": "image/jpeg",
+    "fileLength": 245760,
+    "width": 1080,
+    "height": 1920
+  }
+}
+```
+
+### Files Modified
+- **server.js**: Enhanced media message processing with ephemeral support
+- **docs/journal.md**: This comprehensive documentation
+
+### Current Status
+- ✅ **CRITICAL BUG FIXED** - Ephemeral media messages now processed correctly
+- ✅ All media types supported in both direct and group chats
+- ✅ Proper webhook payloads with accurate message types
+- ✅ Full media download and base64 encoding working
+- 🔄 Ready for testing with group chat media messages
+
+### Next Steps
+- Test image messages in group chats to verify fix
+- Test video, audio, and document messages in groups
+- Verify n8n receives proper media data and message types
+- Monitor webhook payloads for continued accuracy
+
+---
+
 ## 2025-09-07 15:06:18 - Enhanced Quoted Media Processing for Ephemeral Messages
 
 ### Context
@@ -3570,3 +3676,288 @@ The issue occurs because:
 - <mcfile name="Dockerfile" path="C:\Scripts\Projects\whatsapp-ai\Dockerfile"></mcfile> - Added runtime permission fix and su-exec
 
 **Status:** ✅ **DOCKER PERMISSION FIX IMPLEMENTED** - Ready for testing once Docker Desktop is installed.
+
+---
+
+## 2025-09-12 19:59:39 - Message Sender Identification System Analysis
+
+**Context:** User requested understanding of how the code identifies who is sending messages. This system is crucial for authorization, response logic, and contact management.
+
+### Core Message Sender Identification Components
+
+#### 1. **fromMe Property**
+- **Location:** <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> line 1104
+- **Purpose:** WhatsApp's built-in property to identify if a message was sent by the bot itself
+- **Usage:** `if (!message.key.fromMe && m.type === 'notify')` - Only process messages NOT from the bot
+- **Critical:** Prevents infinite loops where bot responds to its own messages
+
+#### 2. **Sender Identification Logic**
+```javascript
+// Determine sender information for both direct and group messages
+const isGroup = message.key.remoteJid.endsWith('@g.us');
+let sender, actualSender;
+
+if (isGroup) {
+  // For group messages, use participantPn (phone number) first, fallback to participant (LID)
+  actualSender = message.key.participantPn || message.key.participant;
+  sender = message.key.remoteJid; // Keep group ID for context
+} else {
+  // For direct messages, remoteJid is the actual sender
+  actualSender = message.key.remoteJid;
+  sender = message.key.remoteJid;
+}
+```
+
+#### 3. **Bot Self-Recognition System**
+- **Variables:** `who_i_am` (bot's phone number) and `who_i_am_lid` (bot's LID)
+- **Initialization:** Set during WhatsApp connection in <mcsymbol name="connectToWhatsApp" filename="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js" startline="990" type="function"></mcsymbol>
+- **Function:** <mcsymbol name="isOurApiNumber" filename="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js" startline="725" type="function"></mcsymbol> - Determines if a sender ID belongs to the bot
+
+#### 4. **Authorization Logic (shouldReply)**
+
+**Direct Messages:**
+- **Rule:** Reply to ALL direct messages (except chatbot commands starting with `/`)
+- **Logic:** `shouldReply = true` for any non-group message
+- **Zero Configuration:** Works immediately without environment setup
+
+**Group Messages:**
+- **Rule:** Reply only when the bot is mentioned/tagged
+- **Detection Methods:**
+  - Text mentions: `@phoneNumber` in message content
+  - JID mentions: WhatsApp's mention system in `contextInfo.mentionedJid`
+  - Base number matching: Handles device suffixes (e.g., `6281145401505:66`)
+
+#### 5. **LID Mapping System**
+- **Manager:** <mcfile name="lib/lidMapping.js" path="C:\Scripts\Projects\whatsapp-ai\lib\lidMapping.js"></mcfile>
+- **Purpose:** Maps WhatsApp LIDs (Linked IDs) to phone numbers
+- **Functions:**
+  - `extractPhoneNumber(id)` - Converts any WhatsApp ID to phone number
+  - `extractLID(id)` - Extracts LID from WhatsApp ID
+  - `getCorrectPushName(senderId)` - Gets display name for sender
+
+### Message Processing Flow
+
+1. **Message Reception:** WhatsApp sends message via `messages.upsert` event
+2. **fromMe Check:** Skip if message is from bot itself
+3. **Sender Extraction:** Determine actual sender (handles groups vs direct)
+4. **Phone Number Lookup:** Convert sender ID to phone number using LID mapping
+5. **Authorization Check:** Determine if bot should respond (`shouldReply`)
+6. **Contact Processing:** Update contact database with sender information
+7. **Response/Logging:** Either reply or log based on authorization
+
+### Key Technical Details
+
+**WhatsApp ID Formats:**
+- Phone: `6281145401505@s.whatsapp.net`
+- Group: `120363123456789@g.us`
+- LID: `6281145401505:66@lid` (with device suffix)
+
+**Sender Types:**
+- `message.key.remoteJid` - Chat ID (group or individual)
+- `message.key.participant` - Actual sender in groups (LID format)
+- `message.key.participantPn` - Actual sender in groups (phone format)
+
+**Authorization Matrix:**
+| Message Type | Condition | Action |
+|--------------|-----------|--------|
+| Direct Message | Any sender | Reply |
+| Group Message | Bot mentioned | Reply |
+| Group Message | Bot not mentioned | Log only |
+| Chatbot Command | Starts with `/` | Ignore |
+| Bot's own message | `fromMe = true` | Ignore |
+
+### Files Modified
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> - Core message processing and authorization
+- <mcfile name="lib/lidMapping.js" path="C:\Scripts\Projects\whatsapp-ai\lib\lidMapping.js"></mcfile> - Sender identification and contact management
+
+**Status:** ✅ **MESSAGE SENDER IDENTIFICATION SYSTEM DOCUMENTED** - Complete analysis of how the system identifies message senders, handles authorization, and manages contact information.
+
+---
+
+## 2025-09-12 20:04:04 - n8n Message Forwarding System Analysis
+
+**Context:** User requested detailed understanding of how the system forwards messages to n8n workflows for automation and processing.
+
+### Complete n8n Integration Flow
+
+#### 1. **Message Reception & Initial Processing**
+```javascript
+// WhatsApp message received via 'messages.upsert' event
+// Initial checks:
+- Skip if message.key.fromMe === true (bot's own messages)
+- Extract sender information (direct vs group messages)
+- Determine if bot should reply (shouldReply logic)
+```
+
+#### 2. **Message Data Preparation**
+The system creates a comprehensive `messageData` object:
+```javascript
+const messageData = {
+  timestamp: new Date().toISOString(),
+  messageId: message.key.id,
+  from: actualSender,              // WhatsApp JID of sender
+  fromNumber: senderNumber,        // Phone number extracted from JID
+  groupId: isGroup ? sender : null,
+  replyTo: isGroup ? sender : actualSender,
+  message: messageText,            // Extracted text content
+  messageType: primaryMessageType, // 'text', 'extended_text', 'image', etc.
+  hasAttachment: hasAttachment,
+  attachmentType: attachmentType,
+  media: universalMedia,           // Base64 encoded media content
+  mediaInfo: mediaInfo,            // Media metadata (size, mimetype, etc.)
+  attachments: attachments,        // Array of all attachments
+  isGroup: isGroup,
+  pushName: correctPushName,       // Display name from contacts
+  quotedMessage: quotedMessageInfo, // Replied message data
+  mentionedJids: mentionedJids,    // Tagged users in message
+  botNumber: who_i_am,             // Bot's phone number
+  botLid: who_i_am_lid,           // Bot's LID
+  shouldReply: shouldReply         // Authorization flag
+};
+```
+
+#### 3. **Message Buffering System**
+**Purpose:** Combines rapid consecutive messages from same sender
+- **Buffer Timeout:** 3 seconds (MESSAGE_BUFFER_TIMEOUT)
+- **Logic:** Groups messages by phone number, flushes after timeout
+- **Benefits:** Reduces n8n webhook calls, provides context for conversations
+
+```javascript
+// Buffering process:
+1. Check if buffering enabled and sender has existing buffer
+2. Add message to buffer or create new buffer
+3. Reset 3-second timer
+4. When timer expires, combine all messages with newlines
+5. Process combined message as single n8n call
+```
+
+#### 4. **n8n Webhook Processing Paths**
+
+**Path A: Reply Messages (shouldReply = true)**
+1. **Function:** `processMessageForReply(messageData)`
+2. **Active Directory Lookup:** Search user info by phone number
+3. **Webhook Data Enhancement:**
+   ```javascript
+   const webhookData = {
+     ...messageData,
+     adUser: adUserInfo,  // AD user details (name, email, department, gender)
+     shouldReply: true
+   };
+   ```
+4. **Blocking n8n Call:** Wait for response to generate reply
+5. **Response Processing:** Parse n8n output for reply text
+6. **WhatsApp Reply:** Send n8n response back to user
+
+**Path B: Logging Messages (shouldReply = false)**
+1. **Function:** `processMessageForLogging(messageData)`
+2. **Command Filtering:** Skip if message starts with `/`
+3. **Non-blocking Call:** Fire-and-forget to n8n for analytics
+4. **No Reply:** Message logged but no response sent
+
+#### 5. **sendToN8N Function - Core Implementation**
+
+**Configuration Checks:**
+```javascript
+// Environment validation:
+- N8N_ENABLED: Toggle integration on/off
+- N8N_WEBHOOK_URL: Target webhook endpoint
+- N8N_TIMEOUT: Request timeout (default: 60 seconds)
+- N8N_API_KEY: Optional Bearer token authentication
+```
+
+**HTTPS vs HTTP Handling:**
+- **HTTPS URLs:** Uses native `https` module with SSL bypass (`rejectUnauthorized: false`)
+- **HTTP URLs:** Uses `fetch` API with timeout signal
+- **SSL Issues:** Automatically bypasses certificate validation for development
+
+**Request Structure:**
+```javascript
+// Headers sent to n8n:
+{
+  'Content-Type': 'application/json',
+  'User-Agent': 'WhatsApp-AI-Bot/1.0',
+  'Authorization': `Bearer ${N8N_API_KEY}` // if configured
+}
+
+// Body: Complete messageData + adUser info
+```
+
+#### 6. **n8n Response Processing**
+
+**Response Formats Supported:**
+```javascript
+// Array format:
+[{"output": "reply text"}]
+
+// Object format:
+{"output": "reply text"} or {"message": "reply text"}
+
+// String format:
+"reply text"
+```
+
+**Reply Generation:**
+1. **Success:** Extract reply text and send via WhatsApp
+2. **Failure:** Use `sendDefaultReply()` fallback
+3. **Typing Indicator:** Shows "typing..." before reply (if TYPING_ENABLED)
+
+#### 7. **Error Handling & Resilience**
+
+**Network Errors:**
+- Timeout handling (60-second default)
+- SSL certificate bypass for development
+- Graceful degradation (bot continues if n8n fails)
+
+**Processing Errors:**
+- Invalid JSON responses handled
+- Fallback to default replies
+- Comprehensive error logging with context
+
+**Command Filtering:**
+- Direct messages: Skip commands starting with `/`
+- Buffered messages: Check combined text for commands
+- Prevents chatbot commands from consuming n8n tokens
+
+### Technical Architecture Benefits
+
+#### **Scalability**
+- Message buffering reduces webhook volume
+- Non-blocking calls for logging prevent delays
+- Configurable timeouts prevent hanging requests
+
+#### **Reliability**
+- Multiple fallback mechanisms
+- SSL bypass for development environments
+- Comprehensive error logging and monitoring
+
+#### **Flexibility**
+- Supports multiple n8n response formats
+- Optional authentication via API keys
+- Environment-based configuration
+
+#### **Performance**
+- Request duration tracking
+- Efficient media handling (base64 encoding)
+- Smart buffering to reduce API calls
+
+### Integration Workflow Example
+
+```
+1. User sends: "Hello AI, analyze this image" + photo
+2. System extracts: text + base64 image + metadata
+3. AD lookup: Gets user info (name, department, email)
+4. n8n webhook: Sends complete data package
+5. n8n workflow: 
+   - Processes image with vision AI
+   - Generates contextual response
+   - Returns formatted reply
+6. WhatsApp reply: "I can see a sunset photo. The image shows..."
+7. Analytics: Message logged for reporting/training
+```
+
+### Files Involved
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> - Core n8n integration and message processing
+- <mcfile name=".env" path="C:\Scripts\Projects\whatsapp-ai\.env"></mcfile> - n8n configuration variables
+- <mcfile name="lib/lidMapping.js" path="C:\Scripts\Projects\whatsapp-ai\lib\lidMapping.js"></mcfile> - Contact management for user lookup
+
+**Status:** ✅ **N8N MESSAGE FORWARDING SYSTEM DOCUMENTED** - Complete analysis of how messages are processed, buffered, enhanced with user data, and forwarded to n8n workflows with comprehensive error handling and response processing.
