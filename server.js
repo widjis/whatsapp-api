@@ -1026,26 +1026,66 @@ async function connectToWhatsApp() {
     
     if (connection === 'close') {
       const errorCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = errorCode !== DisconnectReason.loggedOut;
+      const errorData = lastDisconnect?.error?.data;
+      const errorMessage = lastDisconnect?.error?.message;
       
-      console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect);
+      console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting analysis...');
       console.log('Error details:', {
         statusCode: errorCode,
-        message: lastDisconnect?.error?.message,
-        data: lastDisconnect?.error?.data
+        message: errorMessage,
+        data: errorData
       });
       
+      // Determine if this is a real logout vs authentication conflict
+      let shouldReconnect = false;
+      let reconnectDelay = 3000;
+      let clearSession = false;
+      
+      if (errorCode === DisconnectReason.loggedOut) {
+        // True user logout - don't reconnect
+        console.log('🛑 User logged out - not reconnecting');
+        shouldReconnect = false;
+      } else if (errorCode === 401) {
+        // Authentication conflict - check if it's a session conflict vs real logout
+        if (errorData?.reason === '401' && errorData?.location === 'odn') {
+          // This is a session conflict, not a real logout
+          console.log('🔴 Authentication conflict detected (401). Session conflict from multiple devices.');
+          shouldReconnect = true;
+          clearSession = true;
+          reconnectDelay = 5000;
+        } else {
+          // Other 401 errors might be real logouts
+          console.log('🔴 Authentication error (401). Treating as logout.');
+          shouldReconnect = false;
+        }
+      } else if (errorCode === 428) {
+        // Connection closed - likely network issue
+        console.log('🟡 Connection closed error (428). Network issue detected.');
+        shouldReconnect = true;
+        reconnectDelay = 5000;
+      } else if (errorMessage?.includes('conflict') || errorMessage?.includes('Connection Failure')) {
+        // Stream conflict - multiple sessions
+        console.log('🔴 Stream conflict detected. Multiple sessions may be active.');
+        shouldReconnect = true;
+        clearSession = true;
+        reconnectDelay = 10000;
+      } else {
+        // Default case - try to reconnect unless it's a known logout reason
+        shouldReconnect = true;
+        console.log('🟡 Unknown error - attempting reconnection');
+      }
+      
       if (soket) {
-        soket.emit('message', 'Connection closed. Reconnecting...');
+        if (shouldReconnect) {
+          soket.emit('message', 'Connection lost. Reconnecting...');
+        } else {
+          soket.emit('message', 'WhatsApp logged out. Please scan QR code again.');
+        }
       }
       
       if (shouldReconnect) {
-        // Handle specific error cases
-        let reconnectDelay = 3000; // Default 3 seconds
-        
-        if (errorCode === 401) {
-          // Authentication conflict - clear session and force re-auth
-          console.log('🔴 Authentication conflict detected (401). Clearing session...');
+        if (clearSession) {
+          // Clear session data for conflicts
           try {
             const fs = require('fs');
             const path = require('path');
@@ -1057,26 +1097,12 @@ async function connectToWhatsApp() {
           } catch (error) {
             console.error('❌ Failed to clear session data:', error.message);
           }
-          reconnectDelay = 5000; // Wait longer for auth conflicts
-        } else if (errorCode === 428) {
-          // Connection closed - likely network issue
-          console.log('🟡 Connection closed error (428). Network issue detected.');
-          reconnectDelay = 5000;
-        } else if (lastDisconnect?.error?.message?.includes('conflict')) {
-          // Stream conflict - multiple sessions
-          console.log('🔴 Stream conflict detected. Multiple sessions may be active.');
-          reconnectDelay = 10000; // Wait longer for conflicts to resolve
         }
         
         console.log(`⏳ Reconnecting in ${reconnectDelay/1000} seconds...`);
         setTimeout(() => {
           connectToWhatsApp();
         }, reconnectDelay);
-      } else {
-        console.log('🛑 Not reconnecting - user logged out');
-        if (soket) {
-          soket.emit('message', 'WhatsApp logged out. Please scan QR code again.');
-        }
       }
     } else if (connection === 'open') {
       console.log('WhatsApp connection opened');

@@ -4084,16 +4084,21 @@ User reported critical connection errors:
 // Improved reconnection logic with specific error handling
 if (connection === 'close') {
   const errorCode = lastDisconnect?.error?.output?.statusCode;
+  const errorData = lastDisconnect?.error?.data;
   
-  if (errorCode === 401) {
-    // Clear corrupted session data
-    fs.rmSync(authPath, { recursive: true, force: true });
+  if (errorCode === 401 && errorData?.reason === '401' && errorData?.location === 'odn') {
+    // Session conflict from multiple devices - clear and reconnect
+    console.log('🔴 Authentication conflict detected (401). Session conflict from multiple devices.');
+    clearSession = true;
+    shouldReconnect = true;
     reconnectDelay = 5000;
-  } else if (errorCode === 428) {
-    // Network issue handling
-    reconnectDelay = 5000;
-  } else if (lastDisconnect?.error?.message?.includes('conflict')) {
-    // Multiple session conflict
+  } else if (errorCode === DisconnectReason.loggedOut) {
+    // True user logout - don't reconnect
+    shouldReconnect = false;
+  } else if (errorMessage?.includes('Connection Failure')) {
+    // Stream conflict - clear session and reconnect
+    clearSession = true;
+    shouldReconnect = true;
     reconnectDelay = 10000;
   }
 }
