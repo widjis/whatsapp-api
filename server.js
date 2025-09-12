@@ -63,13 +63,86 @@ const TYPING_ENABLED = process.env.TYPING_ENABLED === 'true';
 const MESSAGE_BUFFER_ENABLED = process.env.MESSAGE_BUFFER_ENABLED === 'true';
 const MESSAGE_BUFFER_TIMEOUT = parseInt(process.env.MESSAGE_BUFFER_TIMEOUT) || 3000;
 
+// Presence-Based Buffering Configuration
+const PRESENCE_BUFFER_ENABLED = process.env.PRESENCE_BUFFER_ENABLED === 'true';
+const PRESENCE_BUFFER_MAX_TIMEOUT = parseInt(process.env.PRESENCE_BUFFER_MAX_TIMEOUT) || 10000;
+const PRESENCE_BUFFER_STOP_DELAY = parseInt(process.env.PRESENCE_BUFFER_STOP_DELAY) || 2000;
+const PRESENCE_SUBSCRIPTION_ENABLED = process.env.PRESENCE_SUBSCRIPTION_ENABLED === 'true';
+
 // Message Buffer Storage
-const messageBuffers = new Map(); // phoneNumber -> { messages: [], timer: timeoutId, lastMessageTime: timestamp }
+const messageBuffers = new Map(); // phoneNumber -> { messages: [], timer: timeoutId, lastMessageTime: timestamp, isTyping: boolean, typingTimer: timeoutId }
+// Presence tracking storage
+const presenceStatus = new Map(); // phoneNumber -> { isTyping: boolean, lastUpdate: timestamp }
 
 // Forward declarations for message processing functions
 let processMessageForReply;
 let processMessageForLogging;
 let sendDefaultReply;
+
+// Presence Detection Functions
+function subscribeToPresence(phoneNumber) {
+  if (!PRESENCE_SUBSCRIPTION_ENABLED || !sock) {
+    return;
+  }
+  
+  try {
+    const jid = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@s.whatsapp.net`;
+    sock.presenceSubscribe(jid);
+    console.log(`📡 Subscribed to presence for ${phoneNumber}`);
+  } catch (error) {
+    console.error(`❌ Failed to subscribe to presence for ${phoneNumber}:`, error.message);
+  }
+}
+
+function handlePresenceUpdate(phoneNumber, presence) {
+  if (!PRESENCE_BUFFER_ENABLED) {
+    return;
+  }
+  
+  const isTyping = presence === 'composing';
+  const now = Date.now();
+  
+  // Update presence status
+  presenceStatus.set(phoneNumber, {
+    isTyping,
+    lastUpdate: now
+  });
+  
+  console.log(`👤 Presence update for ${phoneNumber}: ${presence} (typing: ${isTyping})`);
+  
+  // If user has a message buffer, update typing status
+  const buffer = messageBuffers.get(phoneNumber);
+  if (buffer) {
+    buffer.isTyping = isTyping;
+    
+    if (isTyping) {
+      // User started typing - extend the buffer timeout
+      if (buffer.timer) {
+        clearTimeout(buffer.timer);
+      }
+      if (buffer.typingTimer) {
+        clearTimeout(buffer.typingTimer);
+      }
+      
+      // Set maximum timeout as fallback
+      buffer.timer = setTimeout(() => {
+        console.log(`⏰ Max timeout reached for ${phoneNumber}, flushing buffer`);
+        flushMessageBuffer(phoneNumber);
+      }, PRESENCE_BUFFER_MAX_TIMEOUT);
+      
+    } else {
+      // User stopped typing - set delay before processing
+      if (buffer.typingTimer) {
+        clearTimeout(buffer.typingTimer);
+      }
+      
+      buffer.typingTimer = setTimeout(() => {
+        console.log(`✋ User stopped typing for ${phoneNumber}, flushing buffer after delay`);
+        flushMessageBuffer(phoneNumber);
+      }, PRESENCE_BUFFER_STOP_DELAY);
+    }
+  }
+}
 
 // Message Buffering Functions
 function addToMessageBuffer(phoneNumber, messageData) {
@@ -84,8 +157,13 @@ function addToMessageBuffer(phoneNumber, messageData) {
     messageBuffers.set(phoneNumber, {
       messages: [],
       timer: null,
-      lastMessageTime: now
+      typingTimer: null,
+      lastMessageTime: now,
+      isTyping: false
     });
+    
+    // Subscribe to presence updates for this user
+    subscribeToPresence(phoneNumber);
   }
 
   const buffer = messageBuffers.get(phoneNumber);
@@ -94,15 +172,39 @@ function addToMessageBuffer(phoneNumber, messageData) {
   buffer.messages.push(messageData);
   buffer.lastMessageTime = now;
   
-  // Clear existing timer if any
+  // Clear existing timers
   if (buffer.timer) {
     clearTimeout(buffer.timer);
   }
+  if (buffer.typingTimer) {
+    clearTimeout(buffer.typingTimer);
+  }
   
-  // Set new timer to flush buffer after timeout
-  buffer.timer = setTimeout(() => {
-    flushMessageBuffer(phoneNumber);
-  }, MESSAGE_BUFFER_TIMEOUT);
+  // Check if presence-based buffering is enabled
+  if (PRESENCE_BUFFER_ENABLED) {
+    // Check current typing status
+    const currentPresence = presenceStatus.get(phoneNumber);
+    const isCurrentlyTyping = currentPresence?.isTyping || false;
+    
+    if (isCurrentlyTyping) {
+      // User is typing, wait for them to stop (with max timeout as fallback)
+      console.log(`⌨️ User ${phoneNumber} is typing, waiting for them to finish...`);
+      buffer.timer = setTimeout(() => {
+        console.log(`⏰ Max timeout reached for ${phoneNumber}, flushing buffer`);
+        flushMessageBuffer(phoneNumber);
+      }, PRESENCE_BUFFER_MAX_TIMEOUT);
+    } else {
+      // User not typing, use shorter delay to allow for quick follow-up messages
+      buffer.timer = setTimeout(() => {
+        flushMessageBuffer(phoneNumber);
+      }, PRESENCE_BUFFER_STOP_DELAY);
+    }
+  } else {
+    // Fallback to traditional timeout-based buffering
+    buffer.timer = setTimeout(() => {
+      flushMessageBuffer(phoneNumber);
+    }, MESSAGE_BUFFER_TIMEOUT);
+  }
   
   return true; // Message was buffered
 }
@@ -119,9 +221,12 @@ function flushMessageBuffer(phoneNumber) {
   // Check if combined message is a command before processing
   if (combinedMessage && /^\//.test(combinedMessage.trim())) {
     console.log('Skipping n8n processing for buffered chatbot command:', combinedMessage.trim());
-    // Clear the buffer
+    // Clear the buffer and timers
     if (buffer.timer) {
       clearTimeout(buffer.timer);
+    }
+    if (buffer.typingTimer) {
+      clearTimeout(buffer.typingTimer);
     }
     messageBuffers.delete(phoneNumber);
     return; // Skip processing for commands
@@ -133,17 +238,23 @@ function flushMessageBuffer(phoneNumber) {
     ...firstMessage,
     message: combinedMessage,
     messageCount: buffer.messages.length,
-    isBufferedMessage: true
+    isBufferedMessage: true,
+    bufferDuration: Date.now() - buffer.lastMessageTime,
+    wasTypingDetected: buffer.isTyping
   };
   
-  // Clear the buffer
+  // Clear the buffer and all timers
   if (buffer.timer) {
     clearTimeout(buffer.timer);
+  }
+  if (buffer.typingTimer) {
+    clearTimeout(buffer.typingTimer);
   }
   messageBuffers.delete(phoneNumber);
   
   // Process combined message based on whether it should reply
-  console.log(`Flushing buffered messages for ${phoneNumber}: ${buffer.messages.length} messages combined`);
+  const bufferType = PRESENCE_BUFFER_ENABLED ? 'presence-aware' : 'timeout-based';
+  console.log(`📤 Flushing ${bufferType} buffered messages for ${phoneNumber}: ${buffer.messages.length} messages combined`);
   
   if (combinedData.shouldReply) {
     // Use the processMessageForReply function (need to make it accessible)
@@ -1256,6 +1367,39 @@ async function connectToWhatsApp() {
   sock.ev.on('contacts.upsert', (contacts) => {
     console.log('New contacts added, updating LID mapping...');
     updateLidMapping(contacts);
+  });
+  
+  // Listen for presence updates (typing status)
+  sock.ev.on('presence.update', (presenceUpdate) => {
+    if (!PRESENCE_BUFFER_ENABLED) {
+      return;
+    }
+    
+    try {
+      const { id, presences } = presenceUpdate;
+      
+      // Extract phone number from JID
+      const phoneNumber = lidToPhoneNumber(id);
+      if (!phoneNumber) {
+        return;
+      }
+      
+      // Get the latest presence status
+      const presenceEntries = Object.entries(presences || {});
+      if (presenceEntries.length === 0) {
+        return;
+      }
+      
+      // Get the most recent presence update
+      const [participantId, presenceData] = presenceEntries[0];
+      const presence = presenceData?.lastKnownPresence;
+      
+      if (presence) {
+        handlePresenceUpdate(phoneNumber, presence);
+      }
+    } catch (error) {
+      console.error('❌ Error processing presence update:', error.message);
+    }
   });
   
   sock.ev.on('messages.upsert', async (m) => {

@@ -3583,6 +3583,188 @@ Server logs will now show "Skipping n8n processing for buffered chatbot command"
 
 ---
 
+## 2025-09-13 06:37:08 - Presence-Based Message Buffering Implementation
+
+### Context
+User requested enhancement to the existing message buffering system to detect when users are typing and intelligently wait for them to finish before processing messages. Instead of using pure timeout-based buffering, the system should now monitor user presence (typing status) and collect messages until the user stops typing or a maximum timeout is reached.
+
+### Technical Implementation
+
+#### 1. Environment Configuration
+Added new environment variables for presence-based buffering:
+
+```env
+# Presence-Based Buffering Configuration
+PRESENCE_BUFFER_ENABLED=true              # Enable presence detection for smart buffering
+PRESENCE_BUFFER_MAX_TIMEOUT=10000         # Maximum time to wait (10 seconds fallback)
+PRESENCE_BUFFER_STOP_DELAY=2000           # Wait time after user stops typing (2 seconds)
+PRESENCE_SUBSCRIPTION_ENABLED=true        # Enable presence subscription for users
+```
+
+#### 2. Presence Detection System
+
+**Presence Subscription Function:**
+```javascript
+function subscribeToPresence(phoneNumber) {
+  if (!PRESENCE_SUBSCRIPTION_ENABLED || !sock) return;
+  
+  try {
+    const jid = phoneNumber.includes('@') ? phoneNumber : `${phoneNumber}@s.whatsapp.net`;
+    sock.presenceSubscribe(jid);
+    console.log(`📡 Subscribed to presence for ${phoneNumber}`);
+  } catch (error) {
+    console.error(`❌ Failed to subscribe to presence for ${phoneNumber}:`, error.message);
+  }
+}
+```
+
+**Presence Update Handler:**
+```javascript
+function handlePresenceUpdate(phoneNumber, presence) {
+  const isTyping = presence === 'composing';
+  
+  // Update presence tracking
+  presenceStatus.set(phoneNumber, {
+    isTyping,
+    lastUpdate: Date.now()
+  });
+  
+  // Update buffer timing based on typing status
+  const buffer = messageBuffers.get(phoneNumber);
+  if (buffer) {
+    if (isTyping) {
+      // User started typing - extend timeout
+      buffer.timer = setTimeout(() => flushMessageBuffer(phoneNumber), PRESENCE_BUFFER_MAX_TIMEOUT);
+    } else {
+      // User stopped typing - process after delay
+      buffer.typingTimer = setTimeout(() => flushMessageBuffer(phoneNumber), PRESENCE_BUFFER_STOP_DELAY);
+    }
+  }
+}
+```
+
+#### 3. Enhanced Message Buffering Logic
+
+**Smart Buffer Creation:**
+- Automatically subscribes to user presence when creating new buffer
+- Tracks typing status and adjusts timeouts dynamically
+- Uses dual timer system (main timeout + typing delay)
+
+**Intelligent Timeout Management:**
+- **User typing**: Extends timeout to maximum duration (10s)
+- **User stopped typing**: Processes after short delay (2s)
+- **Fallback**: Traditional timeout if presence detection disabled
+
+**Buffer Data Structure:**
+```javascript
+const messageBuffers = new Map(); // phoneNumber -> {
+  messages: [],           // Array of buffered messages
+  timer: timeoutId,       // Main timeout timer
+  typingTimer: timeoutId, // Typing delay timer
+  lastMessageTime: timestamp,
+  isTyping: boolean       // Current typing status
+}
+```
+
+#### 4. WhatsApp Socket Integration
+
+**Presence Event Listener:**
+```javascript
+sock.ev.on('presence.update', (presenceUpdate) => {
+  const { id, presences } = presenceUpdate;
+  const phoneNumber = lidToPhoneNumber(id);
+  const presence = presenceData?.lastKnownPresence;
+  
+  if (presence) {
+    handlePresenceUpdate(phoneNumber, presence);
+  }
+});
+```
+
+### Workflow Enhancement
+
+#### Before (Pure Timeout):
+1. Message received → Add to buffer
+2. Set 3-second timer
+3. New message → Reset timer
+4. Timer expires → Process all messages
+
+#### After (Presence-Aware):
+1. Message received → Add to buffer + Subscribe to presence
+2. Check if user is typing:
+   - **Typing**: Set max timeout (10s fallback)
+   - **Not typing**: Set short delay (2s)
+3. Presence updates:
+   - **Started typing**: Extend timeout
+   - **Stopped typing**: Process after delay
+4. Process when user stops typing or max timeout reached
+
+### Configuration Options
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `PRESENCE_BUFFER_ENABLED` | `true` | Enable smart presence-based buffering |
+| `PRESENCE_BUFFER_MAX_TIMEOUT` | `10000ms` | Maximum wait time (fallback) |
+| `PRESENCE_BUFFER_STOP_DELAY` | `2000ms` | Delay after user stops typing |
+| `PRESENCE_SUBSCRIPTION_ENABLED` | `true` | Subscribe to user presence updates |
+| `MESSAGE_BUFFER_ENABLED` | `true` | Enable message buffering system |
+| `MESSAGE_BUFFER_TIMEOUT` | `3000ms` | Fallback timeout when presence disabled |
+
+### Benefits
+
+1. **Improved User Experience**:
+   - Waits for users to finish their complete thought
+   - Reduces interruptions while typing
+   - More natural conversation flow
+
+2. **Better Context Understanding**:
+   - AI receives complete messages instead of fragments
+   - Better comprehension of user intent
+   - More accurate responses
+
+3. **Reduced API Calls**:
+   - Fewer n8n webhook calls
+   - Lower token consumption
+   - Better cost efficiency
+
+4. **Intelligent Timing**:
+   - Adapts to user behavior
+   - Fast response when user finished
+   - Prevents infinite waiting with max timeout
+
+### Privacy Considerations
+
+- **Presence Subscription**: Users may see "typing" indicators from the bot
+- **Configurable**: Can be disabled via `PRESENCE_SUBSCRIPTION_ENABLED=false`
+- **Fallback**: System works with traditional timeout if presence fails
+- **No Data Storage**: Presence status not persisted, only used for timing
+
+### Files Modified
+
+1. **`.env`** - Added presence-based buffering configuration
+2. **`server.js`** - Enhanced buffering system with presence detection:
+   - Added presence subscription functions
+   - Enhanced buffer management with dual timers
+   - Added presence.update event listener
+   - Updated buffer data structure
+3. **`docs/journal.md`** - Comprehensive documentation
+
+### Current Status
+- ✅ **Environment Configuration** - All variables added
+- ✅ **Presence Detection** - Subscription and event handling implemented
+- ✅ **Buffer Enhancement** - Smart timing logic integrated
+- ✅ **Socket Integration** - Presence event listener added
+- 🔄 **Testing Required** - Real-world validation needed
+
+### Next Steps
+- Test with real WhatsApp conversations
+- Monitor presence detection accuracy
+- Validate timing behavior with different user patterns
+- Fine-tune timeout values based on usage data
+- Consider adding presence detection metrics
+
+---
+
 ## 2025-09-07 15:37:36 - shouldReply=false N8N Processing Fix
 
 **Context:** User identified that messages with `shouldReply=false` were still being sent to n8n webhook, consuming unnecessary tokens. When `shouldReply` is false, there should be no processing at all since the system determined no action is needed.
