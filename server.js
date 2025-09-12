@@ -169,10 +169,12 @@ async function sendToN8N(data) {
     return { success: false, reason: 'no_url' };
   }
 
-  // Check if WhatsApp is connected before sending to n8n
-  if (!sock || sock.ws?.readyState !== 1) {
-    console.log('⚠️ WhatsApp not connected. Skipping n8n webhook for message:', data.messageId || 'unknown');
-    return { success: false, reason: 'whatsapp_disconnected' };
+  // Enhanced WhatsApp connection check before sending to n8n
+  const connectionStatus = isWhatsAppConnected();
+  if (!connectionStatus.connected) {
+    console.log('⚠️ WhatsApp not connected. Connection status:', connectionStatus);
+    console.log('⚠️ Skipping n8n webhook for message:', data.messageId || 'unknown');
+    return { success: false, reason: connectionStatus.reason, details: connectionStatus.details };
   }
 
   const startTime = Date.now();
@@ -434,9 +436,11 @@ processMessageForLogging = async function(data) {
 
 sendDefaultReply = async function(recipient, isGroupMessage) {
   try {
-    // Check if socket is connected before attempting to send
-    if (!sock || sock.ws?.readyState !== 1) {
-      console.log('⚠️ WhatsApp not connected. Skipping default reply to:', recipient);
+    // Enhanced WhatsApp connection check before sending default reply
+    const connectionStatus = isWhatsAppConnected();
+    if (!connectionStatus.connected) {
+      console.log('⚠️ WhatsApp not connected. Connection status:', connectionStatus);
+      console.log('⚠️ Skipping default reply to:', recipient);
       return;
     }
     
@@ -766,6 +770,35 @@ function updateLidMapping(contacts) {
   lidMappingManager.updateContactMappings(contacts);
 }
 
+// Enhanced WhatsApp connection status checker
+function isWhatsAppConnected() {
+  if (!sock) {
+    return {
+      connected: false,
+      reason: 'socket_not_initialized',
+      details: { sock: false, wsReady: false, hasUser: false, canSend: false }
+    };
+  }
+  
+  const wsReady = sock.ws?.readyState === 1;
+  const hasUser = sock.user && sock.user.id;
+  const canSend = typeof sock.sendMessage === 'function';
+  const connected = wsReady && hasUser && canSend;
+  
+  return {
+    connected,
+    reason: connected ? 'fully_connected' : 'partial_connection',
+    details: {
+      sock: true,
+      wsReady,
+      hasUser: !!hasUser,
+      canSend,
+      wsState: sock.ws?.readyState,
+      userId: hasUser ? sock.user.id : null
+    }
+  };
+}
+
 // Function to check if a LID belongs to our API number (using LID Mapping Manager)
 function isOurApiNumber(lid) {
   if (!lid || !who_i_am) {
@@ -831,8 +864,19 @@ app.get('/', (req, res) => {
 
 // API Routes
 app.get('/api/status', (req, res) => {
-  const status = sock ? 'connected' : 'disconnected';
-  res.json({ status, qr: qrDinamic });
+  const connectionStatus = isWhatsAppConnected();
+  const status = connectionStatus.connected ? 'connected' : 'disconnected';
+  
+  res.json({ 
+    status, 
+    qr: qrDinamic,
+    connectionDetails: connectionStatus,
+    user: sock?.user ? {
+      id: sock.user.id,
+      name: sock.user.name
+    } : null,
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.post('/api/send-message', async (req, res) => {
@@ -1046,18 +1090,18 @@ async function connectToWhatsApp() {
         console.log('🛑 User logged out - not reconnecting');
         shouldReconnect = false;
       } else if (errorCode === 401) {
-        // Authentication conflict - check if it's a session conflict vs real logout
-        if (errorData?.reason === '401' && errorData?.location === 'odn') {
-          // This is a session conflict, not a real logout
-          console.log('🔴 Authentication conflict detected (401). Session conflict from multiple devices.');
-          shouldReconnect = true;
-          clearSession = true;
-          reconnectDelay = 5000;
-        } else {
-          // Other 401 errors might be real logouts
-          console.log('🔴 Authentication error (401). Treating as logout.');
-          shouldReconnect = false;
-        }
+         // Authentication conflict - check if it's a session conflict vs real logout
+         if (errorData?.reason === '401' && (errorData?.location === 'odn' || errorData?.location === 'cln')) {
+           // This is a session conflict, not a real logout (odn = other device new, cln = client)
+           console.log(`🔴 Authentication conflict detected (401). Session conflict from multiple devices (${errorData.location}).`);
+           shouldReconnect = true;
+           clearSession = true;
+           reconnectDelay = 5000;
+         } else {
+           // Other 401 errors might be real logouts
+           console.log('🔴 Authentication error (401). Treating as logout.');
+           shouldReconnect = false;
+         }
       } else if (errorCode === 428) {
         // Connection closed - likely network issue
         console.log('🟡 Connection closed error (428). Network issue detected.');

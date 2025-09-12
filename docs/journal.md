@@ -4086,13 +4086,13 @@ if (connection === 'close') {
   const errorCode = lastDisconnect?.error?.output?.statusCode;
   const errorData = lastDisconnect?.error?.data;
   
-  if (errorCode === 401 && errorData?.reason === '401' && errorData?.location === 'odn') {
-    // Session conflict from multiple devices - clear and reconnect
-    console.log('🔴 Authentication conflict detected (401). Session conflict from multiple devices.');
-    clearSession = true;
-    shouldReconnect = true;
-    reconnectDelay = 5000;
-  } else if (errorCode === DisconnectReason.loggedOut) {
+  if (errorCode === 401 && errorData?.reason === '401' && (errorData?.location === 'odn' || errorData?.location === 'cln')) {
+     // Session conflict from multiple devices - clear and reconnect (odn = other device new, cln = client)
+     console.log(`🔴 Authentication conflict detected (401). Session conflict from multiple devices (${errorData.location}).`);
+     clearSession = true;
+     shouldReconnect = true;
+     reconnectDelay = 5000;
+   } else if (errorCode === DisconnectReason.loggedOut) {
     // True user logout - don't reconnect
     shouldReconnect = false;
   } else if (errorMessage?.includes('Connection Failure')) {
