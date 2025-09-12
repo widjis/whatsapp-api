@@ -783,11 +783,14 @@ function isWhatsAppConnected() {
   const wsReady = sock.ws?.readyState === 1;
   const hasUser = sock.user && sock.user.id;
   const canSend = typeof sock.sendMessage === 'function';
-  const connected = wsReady && hasUser && canSend;
+  
+  // More lenient connection check: if user is authenticated and can send messages,
+  // consider it connected even if WebSocket state is temporarily inconsistent
+  const connected = hasUser && canSend && (wsReady || sock.ws?.readyState === undefined);
   
   return {
     connected,
-    reason: connected ? 'fully_connected' : 'partial_connection',
+    reason: connected ? (wsReady ? 'fully_connected' : 'functionally_connected') : 'partial_connection',
     details: {
       sock: true,
       wsReady,
