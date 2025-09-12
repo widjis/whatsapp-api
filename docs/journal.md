@@ -3961,3 +3961,216 @@ const messageData = {
 - <mcfile name="lib/lidMapping.js" path="C:\Scripts\Projects\whatsapp-ai\lib\lidMapping.js"></mcfile> - Contact management for user lookup
 
 **Status:** ✅ **N8N MESSAGE FORWARDING SYSTEM DOCUMENTED** - Complete analysis of how messages are processed, buffered, enhanced with user data, and forwarded to n8n workflows with comprehensive error handling and response processing.
+
+---
+
+## 2025-09-12 21:20:39 - LDAP Retry Logic and Push Name Fallback Fix
+
+**Context:** User reported receiving LDAP error messages ("Code: 0x3") in n8n webhook payloads when Active Directory searches fail. The system was sending error messages to n8n instead of properly retrying LDAP searches and falling back to push names when all retries fail.
+
+**Root Cause:** The `searchUserInAD` function was not properly implementing push name fallback when all LDAP retry attempts failed. After exhausting retries, it returned an error object that was sent to n8n, instead of checking for push name availability and using it as a fallback.
+
+**Technical Implementation:**
+
+1. **Enhanced LDAP Fallback Logic:**
+```javascript
+// All LDAP attempts failed - fallback to push name if available
+if (pushName) {
+  console.log(`LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name fallback: ${pushName}`);
+  return {
+    found: false,
+    isPushNameOnly: true,
+    name: pushName,
+    gender: undefined,
+    message: `LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name`,
+    error: lastError?.message || 'Unknown LDAP error',
+    searchedPhone: phoneNumber,
+    timestamp: new Date().toISOString()
+  };
+}
+
+// No push name available - return error (this should NOT be sent to n8n)
+return { 
+  found: false, 
+  error: lastError?.message || 'Unknown LDAP error',
+  message: `Error searching Active Directory after ${LDAP_MAX_RETRIES} attempts`,
+  shouldSkipN8n: true // Flag to indicate this message should not be sent to n8n
+};
+```
+
+2. **Added n8n Skip Logic:**
+```javascript
+// In processMessageForReply and processMessageForLogging
+if (adUserInfo && adUserInfo.shouldSkipN8n) {
+  console.log('Skipping n8n webhook due to LDAP failure without push name fallback');
+  return { success: false, reason: 'ldap_failed_no_pushname' };
+}
+```
+
+**Impact on Message Processing:**
+
+*Before Fix:*
+```json
+{
+  "adUser": {
+    "found": false,
+    "error": " Code: 0x3",
+    "message": "Error searching Active Directory after 2 attempts"
+  }
+}
+```
+*↳ This error payload was sent to n8n*
+
+*After Fix (with push name):*
+```json
+{
+  "adUser": {
+    "found": false,
+    "isPushNameOnly": true,
+    "name": "Call Center",
+    "gender": undefined,
+    "message": "LDAP failed after 2 attempts, using push name",
+    "error": " Code: 0x3"
+  }
+}
+```
+*↳ Valid user data sent to n8n with push name fallback*
+
+*After Fix (no push name):*
+```
+Message processing skipped - not sent to n8n
+```
+*↳ No webhook call made to prevent error spam*
+
+**Benefits:**
+- ✅ Proper push name fallback when LDAP fails
+- ✅ Prevents error messages from being sent to n8n
+- ✅ Reduces n8n token consumption from error messages
+- ✅ Maintains user identification through push names
+- ✅ Cleaner error handling and logging
+
+**Current Status:** ✅ **COMPLETED** - LDAP retry logic now properly falls back to push names, and messages without valid user data are not sent to n8n.
+
+**Next Steps:**
+- Monitor LDAP connection stability in production
+- Verify push name fallback behavior
+- Consider implementing LDAP connection health checks
+
+---
+
+# WhatsApp Connection Error Handling Enhancement
+
+**Date**: 2025-09-12 21:30:31
+
+## Context
+
+User reported critical connection errors:
+- **401 "Stream Errored (conflict)"** - Authentication conflicts from multiple sessions
+- **428 "Connection Closed"** - Network/connection issues preventing message sending
+- Cascading failures when trying to send default replies after connection loss
+
+## Root Cause Analysis
+
+1. **Authentication Conflicts (401)**: Multiple WhatsApp sessions or corrupted auth state
+2. **Connection State Issues**: Functions attempting operations on closed connections
+3. **Insufficient Error Recovery**: Generic reconnection logic without specific error handling
+4. **Cascading Failures**: Connection errors causing multiple subsequent failures
+
+## Technical Implementation
+
+### Enhanced Connection Handling
+
+```javascript
+// Improved reconnection logic with specific error handling
+if (connection === 'close') {
+  const errorCode = lastDisconnect?.error?.output?.statusCode;
+  
+  if (errorCode === 401) {
+    // Clear corrupted session data
+    fs.rmSync(authPath, { recursive: true, force: true });
+    reconnectDelay = 5000;
+  } else if (errorCode === 428) {
+    // Network issue handling
+    reconnectDelay = 5000;
+  } else if (lastDisconnect?.error?.message?.includes('conflict')) {
+    // Multiple session conflict
+    reconnectDelay = 10000;
+  }
+}
+```
+
+### Connection State Validation
+
+```javascript
+// Added to sendDefaultReply and sendToN8N functions
+if (!sock || sock.ws?.readyState !== 1) {
+  console.log('⚠️ WhatsApp not connected. Skipping operation');
+  return;
+}
+```
+
+### Enhanced Error Classification
+
+```javascript
+// Specific error handling for different failure types
+if (errorMessage.includes('Connection Closed') || errorMessage.includes('Stream Errored')) {
+  console.log('🔴 Cannot send - WhatsApp connection lost');
+} else if (error.output?.statusCode === 428) {
+  console.log('🟡 Cannot send - Connection precondition failed');
+}
+```
+
+## Impact on System Reliability
+
+### Before Enhancement
+- ❌ 401 errors caused infinite reconnection loops
+- ❌ Functions attempted operations on closed connections
+- ❌ Cascading failures from single connection issues
+- ❌ Generic error messages without actionable information
+
+### After Enhancement
+- ✅ 401 errors trigger session cleanup and forced re-authentication
+- ✅ Connection state validation prevents operations on closed sockets
+- ✅ Specific reconnection delays based on error type
+- ✅ Clear error classification with emoji indicators
+- ✅ Graceful degradation when WhatsApp is disconnected
+
+## Error Recovery Workflow
+
+1. **Authentication Conflict (401)**:
+   - Clear `auth_info_baileys` directory
+   - Force QR code re-scan
+   - Wait 5 seconds before reconnection
+
+2. **Connection Closed (428)**:
+   - Detect network issues
+   - Wait 5 seconds for network recovery
+   - Attempt reconnection
+
+3. **Stream Conflict**:
+   - Detect multiple session conflicts
+   - Wait 10 seconds for conflicts to resolve
+   - Attempt reconnection
+
+## Files Modified
+
+- **server.js**: Enhanced connection handling, error classification, state validation
+- **docs/journal.md**: Comprehensive documentation of improvements
+
+## Benefits
+
+1. **Improved Reliability**: Specific handling for different error types
+2. **Better User Experience**: Clear error messages and recovery actions
+3. **Reduced Downtime**: Faster recovery from authentication conflicts
+4. **Prevented Cascading Failures**: Connection state validation
+5. **Enhanced Monitoring**: Detailed error logging with visual indicators
+
+## Current Status
+
+✅ **Connection error handling enhanced with specific recovery mechanisms**
+
+## Next Steps
+
+1. Monitor error patterns in production
+2. Consider implementing connection health checks
+3. Add metrics for connection stability tracking

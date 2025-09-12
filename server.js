@@ -169,6 +169,12 @@ async function sendToN8N(data) {
     return { success: false, reason: 'no_url' };
   }
 
+  // Check if WhatsApp is connected before sending to n8n
+  if (!sock || sock.ws?.readyState !== 1) {
+    console.log('⚠️ WhatsApp not connected. Skipping n8n webhook for message:', data.messageId || 'unknown');
+    return { success: false, reason: 'whatsapp_disconnected' };
+  }
+
   const startTime = Date.now();
   
   try {
@@ -428,6 +434,12 @@ processMessageForLogging = async function(data) {
 
 sendDefaultReply = async function(recipient, isGroupMessage) {
   try {
+    // Check if socket is connected before attempting to send
+    if (!sock || sock.ws?.readyState !== 1) {
+      console.log('⚠️ WhatsApp not connected. Skipping default reply to:', recipient);
+      return;
+    }
+    
     // Show typing indicator before sending default reply (if enabled)
     if (TYPING_ENABLED) {
       try {
@@ -438,20 +450,16 @@ sendDefaultReply = async function(recipient, isGroupMessage) {
         await new Promise(resolve => setTimeout(resolve, 1000));
       } catch (presenceError) {
         console.error('Error with presence update for default reply:', presenceError.message);
+        // Don't fail the entire function for presence errors
       }
     }
     
-    if (isGroupMessage) {
-      await sock.sendMessage(recipient, { 
-        text: 'Currently, AI system is not available, please wait. 🤖' 
-      });
-      console.log('Sent default group reply to:', recipient, TYPING_ENABLED ? '' : '(typing disabled)');
-    } else {
-      await sock.sendMessage(recipient, { 
-        text: 'Currently, AI system is not available, please wait. 🤖\n\nPlease try again later.' 
-      });
-      console.log('Sent default direct reply to:', recipient, TYPING_ENABLED ? '' : '(typing disabled)');
-    }
+    const messageText = isGroupMessage 
+      ? 'Currently, AI system is not available, please wait. 🤖'
+      : 'Currently, AI system is not available, please wait. 🤖\n\nPlease try again later.';
+    
+    await sock.sendMessage(recipient, { text: messageText });
+    console.log(`✅ Sent default ${isGroupMessage ? 'group' : 'direct'} reply to:`, recipient, TYPING_ENABLED ? '' : '(typing disabled)');
     
     // Mark as available after sending (if typing was enabled)
     if (TYPING_ENABLED) {
@@ -462,7 +470,15 @@ sendDefaultReply = async function(recipient, isGroupMessage) {
       }
     }
   } catch (error) {
-    console.error('Error sending default reply:', error);
+    const errorMessage = error.message || 'Unknown error';
+    
+    if (errorMessage.includes('Connection Closed') || errorMessage.includes('Stream Errored')) {
+      console.log('🔴 Cannot send default reply - WhatsApp connection lost:', errorMessage);
+    } else if (error.output?.statusCode === 428) {
+      console.log('🟡 Cannot send default reply - Connection precondition failed (428)');
+    } else {
+      console.error('❌ Error sending default reply:', error);
+    }
   }
 };
 
@@ -1009,17 +1025,58 @@ async function connectToWhatsApp() {
     }
     
     if (connection === 'close') {
-      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      const errorCode = lastDisconnect?.error?.output?.statusCode;
+      const shouldReconnect = errorCode !== DisconnectReason.loggedOut;
+      
       console.log('Connection closed due to ', lastDisconnect?.error, ', reconnecting ', shouldReconnect);
+      console.log('Error details:', {
+        statusCode: errorCode,
+        message: lastDisconnect?.error?.message,
+        data: lastDisconnect?.error?.data
+      });
       
       if (soket) {
         soket.emit('message', 'Connection closed. Reconnecting...');
       }
       
       if (shouldReconnect) {
+        // Handle specific error cases
+        let reconnectDelay = 3000; // Default 3 seconds
+        
+        if (errorCode === 401) {
+          // Authentication conflict - clear session and force re-auth
+          console.log('🔴 Authentication conflict detected (401). Clearing session...');
+          try {
+            const fs = require('fs');
+            const path = require('path');
+            const authPath = path.join(__dirname, 'auth_info_baileys');
+            if (fs.existsSync(authPath)) {
+              fs.rmSync(authPath, { recursive: true, force: true });
+              console.log('✅ Session data cleared. Will require QR scan.');
+            }
+          } catch (error) {
+            console.error('❌ Failed to clear session data:', error.message);
+          }
+          reconnectDelay = 5000; // Wait longer for auth conflicts
+        } else if (errorCode === 428) {
+          // Connection closed - likely network issue
+          console.log('🟡 Connection closed error (428). Network issue detected.');
+          reconnectDelay = 5000;
+        } else if (lastDisconnect?.error?.message?.includes('conflict')) {
+          // Stream conflict - multiple sessions
+          console.log('🔴 Stream conflict detected. Multiple sessions may be active.');
+          reconnectDelay = 10000; // Wait longer for conflicts to resolve
+        }
+        
+        console.log(`⏳ Reconnecting in ${reconnectDelay/1000} seconds...`);
         setTimeout(() => {
           connectToWhatsApp();
-        }, 3000);
+        }, reconnectDelay);
+      } else {
+        console.log('🛑 Not reconnecting - user logged out');
+        if (soket) {
+          soket.emit('message', 'WhatsApp logged out. Please scan QR code again.');
+        }
       }
     } else if (connection === 'open') {
       console.log('WhatsApp connection opened');
