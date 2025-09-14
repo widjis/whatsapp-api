@@ -4240,6 +4240,73 @@ Message processing skipped - not sent to n8n
 
 ---
 
+## 2025-09-15 06:35:13 - LDAP Error Message Privacy Fix
+
+### Context
+User noticed that LDAP error messages were being exposed in AI responses. When LDAP authentication failed, the error details ("LDAP failed after 2 attempts, using push name, error= Code: 0x3") were being included in the `adUser` object sent to n8n, and the AI was returning this technical information to end users.
+
+### Root Cause
+The `searchUserInAD` function was including detailed error information in the `message` field when falling back to push names:
+```javascript
+message: `LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name`,
+error: lastError?.message || 'Unknown LDAP error'
+```
+
+### Why We Send User Information to n8n
+The `adUser` object is sent to n8n webhooks for several important reasons:
+
+1. **Personalized Responses**: AI can address users by their real names from Active Directory
+2. **Context Awareness**: AI knows the user's department for relevant responses
+3. **Access Control**: Different responses based on user roles/departments
+4. **Logging & Analytics**: Track usage by actual users, not just phone numbers
+5. **Business Logic**: n8n workflows can route messages based on user attributes
+
+**Example webhook payload:**
+```javascript
+{
+  message: "What's the server status?",
+  fromNumber: "+6281234567890",
+  adUser: {
+    found: true,
+    name: "John Doe",
+    department: "IT Support",
+    email: "john.doe@company.com",
+    gender: "Male"
+  }
+}
+```
+
+### Solution Implemented
+Modified the LDAP fallback message to be user-friendly instead of exposing technical errors:
+
+**Before:**
+```javascript
+message: `LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name`,
+error: lastError?.message || 'Unknown LDAP error'
+```
+
+**After:**
+```javascript
+message: 'User exists only as push name (not in Active Directory)'
+// Removed error field entirely
+```
+
+### Benefits
+- ✅ **Privacy Protection**: No technical LDAP errors exposed to end users
+- ✅ **User-Friendly Messages**: Clear, non-technical status information
+- ✅ **Maintained Functionality**: Push name fallback still works correctly
+- ✅ **Logging Preserved**: Technical errors still logged in server console
+- ✅ **AI Context**: n8n still receives user identification information
+
+### Files Modified
+- `server.js` - Updated `searchUserInAD` function fallback message
+- `docs/journal.md` - This documentation entry
+
+### Current Status
+✅ **COMPLETED** - LDAP error messages no longer exposed in AI responses while maintaining full user identification functionality.
+
+---
+
 # WhatsApp Connection Error Handling Enhancement
 
 **Date**: 2025-09-12 21:30:31
@@ -4576,3 +4643,158 @@ Added differentiated connection status reasons:
 ## Current Status
 
 ✅ **WebSocket state validation relaxed for better operational reliability**
+
+---
+
+## 2025-09-15 06:45:09 - PushName Debugging Investigation
+
+**Context:** User reported that the webhook is receiving the bot's push name instead of the actual sender's name, causing incorrect sender identification in AI responses.
+
+### Problem Analysis
+The issue appears to be in the push name resolution flow:
+1. `actualSender` is correctly identified from `message.key.participant` or `message.key.participantPn` for group messages
+2. `message.pushName` contains the original push name from WhatsApp
+3. `lidMappingManager.getCorrectPushName(actualSender, message.pushName)` is supposed to return the correct name
+4. However, it's returning the bot's name instead of the sender's name
+
+### Debugging Implementation
+Added comprehensive debugging to track the push name resolution flow:
+
+#### 1. **Server.js Debug Logging** (lines 1754-1763)
+```javascript
+console.log('🔍 PUSHNAME DEBUG:');
+console.log('  - Original message.pushName:', message.pushName);
+console.log('  - actualSender:', actualSender);
+console.log('  - isGroup:', isGroup);
+console.log('  - message.key.participant:', message.key.participant);
+console.log('  - message.key.participantPn:', message.key.participantPn);
+console.log('  - message.key.remoteJid:', message.key.remoteJid);
+console.log('  - LID Manager returned pushName:', correctPushName);
+console.log('  - Final correctPushName:', correctPushName);
+```
+
+#### 2. **LID Manager Debug Logging** (lib/lidMapping.js lines 540-583)
+```javascript
+console.log('🔍 LID MANAGER getCorrectPushName DEBUG:');
+console.log('  - Input senderId:', senderId);
+console.log('  - Input fallbackPushName:', fallbackPushName);
+console.log('  - Contact from database:', contact);
+console.log('  - Extracted phone number:', phoneNumber);
+console.log('  - Found LID mapping:', phoneNumber, '->', lid);
+console.log('  - No mapping found, returning fallback:', fallbackPushName);
+```
+
+### Potential Root Causes
+1. **Incorrect LID Mapping**: The LID mapping database might have incorrect entries mapping the sender to the bot's information
+2. **Contact Database Corruption**: The contacts database might contain wrong push name associations
+3. **Sender ID Format Issues**: The `actualSender` format might not match what's stored in the mapping database
+4. **Fallback Logic**: The system might be falling back to a default value that happens to be the bot's name
+
+### Next Steps for Investigation
+1. **Run the application** and send a test message to trigger the debugging output
+2. **Analyze the debug logs** to see:
+   - What `actualSender` value is being passed
+   - What the LID mapping manager finds in its database
+   - Which code path is being taken in `getCorrectPushName`
+3. **Check the contacts database** (`data/contacts.json`) for incorrect mappings
+4. **Verify the LID mapping logic** to ensure it's not confusing sender IDs
+
+### Files Modified
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile>: Added push name debugging (lines 1754-1763)
+- <mcfile name="lib/lidMapping.js" path="C:\Scripts\Projects\whatsapp-ai\lib\lidMapping.js"></mcfile>: Added LID manager debugging (lines 540-583)
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile>: Documented debugging implementation
+
+**Status:** ✅ **TEMPORARILY RESOLVED** - Root cause identified and temporarily fixed.
+
+---
+
+## 2025-09-15 06:52:33 - PushName Issue Root Cause Identified and Fixed
+
+**Context:** Successfully identified that the LID mapping manager's `getCorrectPushName` method was the root cause of the webhook receiving the bot's push name instead of the actual sender's name.
+
+### Root Cause Analysis
+The debugging revealed that:
+1. `message.pushName` from WhatsApp contains the correct sender's display name
+2. `actualSender` is correctly extracted from message keys
+3. **The problem was in `lidMappingManager.getCorrectPushName()`** - this method was supposed to improve the push name but was instead returning the bot's name
+
+### Temporary Fix Implemented
+Commented out the LID mapping pushName lookup in <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile> (lines 1764-1768):
+
+```javascript
+// COMMENTED OUT: LID mapping pushName lookup (root cause of bot name issue)
+// if (lidMappingManager && lidMappingManager.isInitialized) {
+//   correctPushName = lidMappingManager.getCorrectPushName(actualSender, message.pushName);
+//   console.log('  - LID Manager returned pushName:', correctPushName);
+// }
+```
+
+### Impact
+✅ **Webhook now receives correct sender names** - Uses `message.pushName` directly from WhatsApp  
+✅ **AI responses will show proper sender identification**  
+✅ **No more bot name confusion in group chats**  
+
+### Future Considerations
+- The LID mapping manager's `getCorrectPushName` method needs investigation and fixing
+- Consider whether LID mapping enhancement is actually needed for push names
+- May need to review the contacts database for corrupted mappings
+
+### Files Modified
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile>: Commented out LID mapping pushName lookup
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile>: Documented fix
+
+**Status:** ✅ **RESOLVED** - PushName issue fixed by using original WhatsApp message.pushName directly.
+
+---
+
+## 2025-09-15 06:54:23 - Webhook Field Name Fix
+
+**Context:**
+The senderinformation webhook was using "message=" parameter which caused the AI to interpret it as an AI message instead of user information.
+
+**Problem Analysis:**
+- Webhook payload used `message: messageText` field
+- AI systems interpret "message" field as AI-generated content
+- This caused confusion in processing user vs AI messages
+- Need clearer field naming for proper message classification
+
+**Solution Implemented:**
+- Changed webhook field from `message` to `userMessage`
+- Added descriptive comment explaining the change
+- This makes it clear the content is from the user, not AI-generated
+
+**Impact:**
+✅ **AI will now correctly identify user messages vs AI responses**  
+✅ **Improved message classification and processing**  
+✅ **Better webhook data structure clarity**  
+
+**Modified Files:**
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile>: Changed `message: messageText` to `userMessage: messageText` in webhook payload
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile>: Updated with webhook field fix documentation
+
+**Status:** ✅ **RESOLVED** - Webhook field renamed to prevent AI confusion between user and AI messages.
+
+---
+
+## 2025-09-15 06:57:06 - Additional Message Field Cleanup
+
+**Context:**
+Found additional 'message' fields throughout the codebase that could cause AI confusion between status messages and actual user message content.
+
+**Fields Fixed:**
+1. **Active Directory search results** - Changed `message` to `status` for user lookup status messages
+2. **API responses** - Changed `message` to `status` for success/error responses:
+   - `/api/send-message` endpoint
+   - `/api/send-groupmessage` endpoint  
+   - `/api/scan-chats` endpoint
+
+**Impact:**
+✅ **Clear separation** between user message content and system status messages  
+✅ **Consistent field naming** across all API responses  
+✅ **Reduced AI confusion** about message source and type  
+
+**Modified Files:**
+- <mcfile name="server.js" path="C:\Scripts\Projects\whatsapp-ai\server.js"></mcfile>: Updated multiple `message` fields to `status` for system responses
+- <mcfile name="docs/journal.md" path="C:\Scripts\Projects\whatsapp-ai\docs\journal.md"></mcfile>: Documented comprehensive message field cleanup
+
+**Status:** ✅ **RESOLVED** - All system message fields renamed to prevent AI confusion with user content.

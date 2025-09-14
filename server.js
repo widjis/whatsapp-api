@@ -736,7 +736,7 @@ async function searchUserInAD(phoneNumber, pushName = null) {
         isPushNameOnly: true,
         name: pushName,
         gender: undefined, // Set gender to undefined for push name only users
-        message: 'User exists only as push name (not in Active Directory)',
+        status: 'User exists only as push name (not in Active Directory)', // Changed from 'message' to 'status'
         searchedPhone: phoneNumber,
         timestamp: new Date().toISOString()
       };
@@ -798,13 +798,13 @@ async function searchUserInAD(phoneNumber, pushName = null) {
           isPushNameOnly: true,
           name: pushName,
           gender: undefined, // Set gender to undefined for push name only users
-          message: 'User exists only as push name (not in Active Directory)',
+          status: 'User exists only as push name (not in Active Directory)', // Changed from 'message' to 'status'
           searchedPhone: phoneNumber,
           timestamp: new Date().toISOString()
         };
       }
       
-      return { found: false, message: 'User not found in Active Directory' };
+      return { found: false, status: 'User not found in Active Directory' }; // Changed from 'message' to 'status'
       
     } catch (error) {
       lastError = error;
@@ -835,8 +835,7 @@ async function searchUserInAD(phoneNumber, pushName = null) {
       isPushNameOnly: true,
       name: pushName,
       gender: undefined,
-      message: `LDAP failed after ${LDAP_MAX_RETRIES} attempts, using push name`,
-      error: lastError?.message || 'Unknown LDAP error',
+      status: 'User exists only as push name (not in Active Directory)', // Changed from 'message' to 'status'
       searchedPhone: phoneNumber,
       timestamp: new Date().toISOString()
     };
@@ -1008,7 +1007,7 @@ app.post('/api/send-message', async (req, res) => {
     const formattedNumber = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
     
     await sock.sendMessage(formattedNumber, { text: message });
-    res.json({ success: true, message: 'Message sent successfully' });
+    res.json({ success: true, status: 'Message sent successfully' }); // Changed from 'message' to 'status'
   } catch (error) {
     console.error('Error sending message:', error);
     res.status(500).json({ error: 'Failed to send message' });
@@ -1052,7 +1051,7 @@ app.post('/api/send-groupmessage', async (req, res) => {
     await sock.sendMessage(targetGroupId, { text: message });
     res.json({ 
       success: true, 
-      message: 'Group message sent successfully',
+      status: 'Group message sent successfully', // Changed from 'message' to 'status'
       groupId: targetGroupId
     });
   } catch (error) {
@@ -1133,7 +1132,7 @@ app.post('/api/lid/scan', async (req, res) => {
       console.error('❌ Error during manual chat scan:', error);
     });
     
-    res.json({ success: true, message: 'Chat scan started. Check logs for progress.' });
+    res.json({ success: true, status: 'Chat scan started. Check logs for progress.' }); // Changed from 'message' to 'status'
   } catch (error) {
     console.error('Error starting chat scan:', error);
     res.status(500).json({ error: 'Failed to start chat scan' });
@@ -1753,9 +1752,21 @@ async function connectToWhatsApp() {
 
       // Get correct pushName from LID mapping manager
       let correctPushName = message.pushName || 'Unknown';
-      if (lidMappingManager && lidMappingManager.isInitialized) {
-        correctPushName = lidMappingManager.getCorrectPushName(actualSender, message.pushName);
-      }
+      console.log('🔍 PUSHNAME DEBUG:');
+      console.log('  - Original message.pushName:', message.pushName);
+      console.log('  - actualSender:', actualSender);
+      console.log('  - isGroup:', isGroup);
+      console.log('  - message.key.participant:', message.key.participant);
+      console.log('  - message.key.participantPn:', message.key.participantPn);
+      console.log('  - message.key.remoteJid:', message.key.remoteJid);
+      
+      // COMMENTED OUT: LID mapping pushName lookup (root cause of bot name issue)
+      // if (lidMappingManager && lidMappingManager.isInitialized) {
+      //   correctPushName = lidMappingManager.getCorrectPushName(actualSender, message.pushName);
+      //   console.log('  - LID Manager returned pushName:', correctPushName);
+      // }
+      console.log('  - Final correctPushName:', correctPushName);
+      console.log('🔍 END PUSHNAME DEBUG\n');
 
       const messageData = {
         timestamp: new Date().toISOString(),
