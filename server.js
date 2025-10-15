@@ -25,7 +25,7 @@ let qrDinamic;
 let soket;
 
 // Configuration
-const ADMIN_NUMBER = '6285712612218';
+const ADMIN_NUMBER = '6281130569787'; // Changed from 6285712612218 to avoid conflict with other container
 let who_i_am = null; // Will be set when connection is established
 let who_i_am_lid = null; // Will store our LID for comparison
 
@@ -1155,6 +1155,94 @@ app.post('/api/lid/export', async (req, res) => {
   }
 });
 
+// LDAP API Endpoints
+app.get('/api/ldap-users', async (req, res) => {
+  try {
+    if (!LDAP_ENABLED) {
+      return res.status(503).json({ error: 'LDAP is not enabled' });
+    }
+
+    // Test LDAP connection first
+    try {
+      await getLdapConnection();
+    } catch (error) {
+      return res.status(503).json({ 
+        error: 'LDAP connection failed', 
+        details: error.message 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      status: 'LDAP connection available',
+      config: {
+        url: LDAP_URL,
+        baseDN: LDAP_BASE_DN,
+        enabled: LDAP_ENABLED
+      }
+    });
+  } catch (error) {
+    console.error('Error in LDAP users endpoint:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/api/ldap-users/test-connection', async (req, res) => {
+  try {
+    if (!LDAP_ENABLED) {
+      return res.status(503).json({ 
+        success: false, 
+        error: 'LDAP is not enabled',
+        config: { enabled: false }
+      });
+    }
+
+    // Test LDAP connection
+    try {
+      const client = await getLdapConnection();
+      
+      // Perform a simple search to verify connection works
+      const searchOptions = {
+        scope: 'base',
+        filter: '(objectClass=*)',
+        attributes: ['objectClass']
+      };
+      
+      await client.search(LDAP_BASE_DN, searchOptions);
+      
+      res.json({ 
+        success: true, 
+        status: 'LDAP connection successful',
+        config: {
+          url: LDAP_URL,
+          baseDN: LDAP_BASE_DN,
+          enabled: LDAP_ENABLED,
+          timeout: LDAP_TIMEOUT,
+          maxRetries: LDAP_MAX_RETRIES
+        }
+      });
+    } catch (error) {
+      console.error('LDAP connection test failed:', error);
+      res.status(503).json({ 
+        success: false, 
+        error: 'LDAP connection test failed', 
+        details: error.message,
+        config: {
+          url: LDAP_URL,
+          baseDN: LDAP_BASE_DN,
+          enabled: LDAP_ENABLED
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Error in LDAP test connection endpoint:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Internal server error' 
+    });
+  }
+});
+
 // WhatsApp Connection Function
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
@@ -1220,6 +1308,12 @@ async function connectToWhatsApp() {
         console.log('🟡 Connection closed error (428). Network issue detected.');
         shouldReconnect = true;
         reconnectDelay = 5000;
+      } else if (errorCode === 405) {
+        // Method Not Allowed - often indicates session conflicts or server-side issues
+        console.log('🔴 Method Not Allowed error (405). Session conflict or server issue detected.');
+        shouldReconnect = true;
+        clearSession = true;
+        reconnectDelay = 15000; // Longer delay for 405 errors
       } else if (errorMessage?.includes('conflict') || errorMessage?.includes('Connection Failure')) {
         // Stream conflict - multiple sessions
         console.log('🔴 Stream conflict detected. Multiple sessions may be active.');
@@ -1242,17 +1336,65 @@ async function connectToWhatsApp() {
       
       if (shouldReconnect) {
         if (clearSession) {
-          // Clear session data for conflicts
-          try {
-            const fs = require('fs');
-            const path = require('path');
-            const authPath = path.join(__dirname, 'auth_info_baileys');
-            if (fs.existsSync(authPath)) {
-              fs.rmSync(authPath, { recursive: true, force: true });
-              console.log('✅ Session data cleared. Will require QR scan.');
+          // Docker-compatible session clearing approach
+          console.log('🔄 Session conflict detected - implementing Docker-compatible cleanup...');
+          
+          // Check if we're running in Docker
+          const fs = require('fs');
+          const isDocker = fs.existsSync('/.dockerenv');
+          
+          if (isDocker) {
+            // In Docker: Use container restart approach
+            console.log('🐳 Running in Docker container - using restart approach for session cleanup');
+            console.log('📝 Creating restart signal file...');
+            
+            try {
+              // Create a signal file that external monitoring can detect
+              fs.writeFileSync('/tmp/whatsapp_restart_required', new Date().toISOString());
+              console.log('✅ Restart signal created. Container should be restarted externally.');
+              
+              // Also try to invalidate current session in memory
+              if (sock) {
+                try {
+                  sock.end();
+                  console.log('🔌 Current socket connection terminated');
+                } catch (sockError) {
+                  console.log('⚠️ Socket termination error:', sockError.message);
+                }
+              }
+              
+              // Exit the process to trigger container restart
+              console.log('🔄 Exiting process to trigger container restart...');
+              setTimeout(() => {
+                process.exit(1);
+              }, 2000);
+              
+            } catch (signalError) {
+              console.error('❌ Failed to create restart signal:', signalError.message);
+              // Fallback: try basic session invalidation
+              console.log('🔄 Falling back to session invalidation...');
+              if (sock) {
+                sock.end();
+              }
             }
-          } catch (error) {
-            console.error('❌ Failed to clear session data:', error.message);
+          } else {
+            // Local development: Try file cleanup
+            console.log('💻 Running locally - attempting file cleanup...');
+            try {
+              const path = require('path');
+              const authPath = path.join(__dirname, 'auth_info_baileys');
+              if (fs.existsSync(authPath)) {
+                fs.rmSync(authPath, { recursive: true, force: true });
+                console.log('✅ Session data cleared locally. Will require QR scan.');
+              }
+            } catch (error) {
+              console.error('❌ Failed to clear session data locally:', error.message);
+              // Invalidate in-memory session
+              if (sock) {
+                sock.end();
+                console.log('🔌 Session invalidated in memory');
+              }
+            }
           }
         }
         
